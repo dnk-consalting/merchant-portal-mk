@@ -80,7 +80,7 @@ Login из Auth-коллекции. Контракт эквайера — ист
 | PostgreSQL | **16** — в проде и в тестовом контейнере (Р-73); часть тестов на H2 (§11) | `project_docs/guides/deployment_guide.md` §4.5, `PostgresTestContainer` |
 | Oracle JDBC | `ojdbc11` 23.4, только `ecom` | `ecom/build.gradle` |
 | Testcontainers | 1.20.6 — выше BOM Boot, причина в §11 | `build.gradle` |
-| Gradle wrapper | 8.5 | `gradle/wrapper/gradle-wrapper.properties` |
+| Gradle wrapper | 8.14.5 | `gradle/wrapper/gradle-wrapper.properties` |
 | Lombok | 1.18.30 | во всех модулях |
 
 **Frontend**
