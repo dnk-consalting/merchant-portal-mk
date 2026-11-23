@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 import axios from 'axios';
-import { useAuth, type MfaSetup, type MfaStep } from '../context/AuthContext';
+import { useAuth, type MfaSetup, type MfaStep, type MfaVerification } from '../context/AuthContext';
 import {
   AuthError,
   clearIdleNotice,
@@ -12,6 +12,7 @@ import {
 import { returnPathFrom } from '../auth/guards';
 import { meetsPasswordPolicy } from '../utils/password';
 import { QrCodeSvg, buildQrMatrix } from '../components/QrCodeSvg';
+import { BackupCodesList } from '../components/BackupCodesList';
 import {
   Box,
   Paper,
@@ -22,7 +23,9 @@ import {
   InputAdornment,
   Alert,
   Stack,
-  CircularProgress
+  CircularProgress,
+  Checkbox,
+  FormControlLabel,
 } from '@mui/material';
 import {
   Visibility as VisibilityIcon,
@@ -47,11 +50,15 @@ export const LoginPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   // Пароль задал не владелец (PCI DSS 8.3.5, Р-100): после верного пароля — форма смены, сессия после неё.
   // Второй фактор (PCI DSS 8.4.2, Р-141): после пароля — подключение по QR-коду или ввод кода, сессия после кода.
-  const [mode, setMode] = useState<'signIn' | 'changePassword' | 'mfaSetup' | 'mfaCode'>('signIn');
+  // Резервные коды (Р-142): после подключения — экран выданных кодов, после входа резервным кодом — их остаток.
+  const [mode, setMode] = useState<'signIn' | 'changePassword' | 'mfaSetup' | 'mfaCode' | 'backupCodes' | 'backupUsed'>('signIn');
   const [mfaStep, setMfaStep] = useState<MfaStep | null>(null);
   // Секрет живёт только в состоянии формы, пока идёт подключение.
   const [mfaSetup, setMfaSetup] = useState<MfaSetup | null>(null);
   const [code, setCode] = useState('');
+  const [useBackupCode, setUseBackupCode] = useState(false);
+  const [verification, setVerification] = useState<MfaVerification | null>(null);
+  const [codesSaved, setCodesSaved] = useState(false);
   const qrMatrix = useMemo(() => (mfaSetup ? buildQrMatrix(mfaSetup.otpauthUri) : null), [mfaSetup]);
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -147,6 +154,7 @@ export const LoginPage: React.FC = () => {
   const enterSecondFactor = async (step: MfaStep) => {
     setMfaStep(step);
     setCode('');
+    setUseBackupCode(false);
     try {
       if (step.setupRequired) {
         setMfaSetup(await setupMfa(step.mfaToken));
@@ -166,14 +174,22 @@ export const LoginPage: React.FC = () => {
     e.preventDefault();
     if (isLoading || mfaStep === null) return;
     setError('');
-    if (!/^\d{6}$/.test(code)) {
-      setError(tObj.auth.mfaCodeFormat);
+    if (useBackupCode ? !/^[A-Za-z0-9]{4}-?[A-Za-z0-9]{4}$/.test(code) : !/^\d{6}$/.test(code)) {
+      setError(useBackupCode ? tObj.auth.backupCodeFormat : tObj.auth.mfaCodeFormat);
       return;
     }
 
     setIsLoading(true);
     try {
-      await verifyMfa(mfaStep.mfaToken, code, email.trim());
+      const result = await verifyMfa(mfaStep.mfaToken, code, email.trim());
+      if (result.backupCodes !== null || result.backupCodesLeft !== null) {
+        setVerification(result);
+        setCodesSaved(false);
+        setMode(result.backupCodes !== null ? 'backupCodes' : 'backupUsed');
+        setIsLoading(false);
+        return;
+      }
+      result.complete();
       navigate(returnPathFrom(location.state), { replace: true });
     } catch (err: unknown) {
       setIsLoading(false);
@@ -187,9 +203,32 @@ export const LoginPage: React.FC = () => {
         setError(tObj.auth.networkError);
         return;
       }
+      if (err instanceof AuthError) {
+        backToSignIn();
+        setError(err.code === 'UNKNOWN_ROLE' ? tObj.auth.unknownRole : tObj.auth.malformedResponse);
+        return;
+      }
       setCode('');
       setError(serverMessageOf(err) ?? tObj.auth.authFailed);
     }
+  };
+
+  // Сессия начинается здесь, после экрана с кодами: раньше страница входа сразу ушла бы в портал.
+  const finishSignIn = () => {
+    if (verification === null) return;
+    try {
+      verification.complete();
+      navigate(returnPathFrom(location.state), { replace: true });
+    } catch (err: unknown) {
+      backToSignIn();
+      setError(err instanceof AuthError && err.code === 'UNKNOWN_ROLE' ? tObj.auth.unknownRole : tObj.auth.malformedResponse);
+    }
+  };
+
+  const toggleBackupCode = () => {
+    setUseBackupCode(current => !current);
+    setCode('');
+    setError('');
   };
 
   const backToSignIn = () => {
@@ -201,10 +240,28 @@ export const LoginPage: React.FC = () => {
     setMfaStep(null);
     setMfaSetup(null);
     setCode('');
+    setUseBackupCode(false);
+    setVerification(null);
+    setCodesSaved(false);
   };
 
-  const codeField = (
+  // key: при смене вида кода поле пересоздаётся — с фокусом и своей клавиатурой на телефоне.
+  const codeField = useBackupCode ? (
     <TextField
+      key="backup-code"
+      fullWidth
+      label={tObj.auth.backupCodeLabel}
+      name="backup-code"
+      autoComplete="off"
+      autoFocus
+      value={code}
+      onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, '').slice(0, 9))}
+      disabled={isLoading}
+      inputProps={{ maxLength: 9, style: { fontFamily: 'monospace' } }}
+    />
+  ) : (
+    <TextField
+      key="app-code"
       fullWidth
       label={tObj.auth.mfaCodeLabel}
       name="one-time-code"
@@ -356,7 +413,7 @@ export const LoginPage: React.FC = () => {
         {mode === 'mfaCode' && (
           <form onSubmit={handleVerify} noValidate>
             <Stack spacing={3}>
-              <Alert severity="info">{tObj.auth.mfaCodeIntro}</Alert>
+              <Alert severity="info">{useBackupCode ? tObj.auth.backupCodeIntro : tObj.auth.mfaCodeIntro}</Alert>
               <Typography variant="body2" sx={{ fontFamily: 'monospace', fontWeight: 600 }}>{email.trim()}</Typography>
               {codeField}
               <Button
@@ -369,9 +426,56 @@ export const LoginPage: React.FC = () => {
               >
                 {isLoading ? <CircularProgress size={24} sx={{ color: 'white' }} /> : tObj.auth.signIn}
               </Button>
+              <Button size="small" onClick={toggleBackupCode} disabled={isLoading}>
+                {useBackupCode ? tObj.auth.useAppCode : tObj.auth.useBackupCode}
+              </Button>
               <Button onClick={backToSignIn} disabled={isLoading}>{tObj.common.back}</Button>
             </Stack>
           </form>
+        )}
+
+        {mode === 'backupCodes' && verification?.backupCodes && (
+          <Stack spacing={3}>
+            <Alert severity="warning">{tObj.auth.backupCodesIntro}</Alert>
+            <BackupCodesList codes={verification.backupCodes} account={email.trim()} />
+            <FormControlLabel
+              control={<Checkbox checked={codesSaved} onChange={(e) => setCodesSaved(e.target.checked)} />}
+              label={tObj.auth.backupCodesSaved}
+            />
+            <Button
+              variant="contained"
+              size="large"
+              fullWidth
+              disabled={!codesSaved}
+              onClick={finishSignIn}
+              sx={{ py: 1.75, fontWeight: 600, fontSize: '1rem' }}
+            >
+              {tObj.auth.continue}
+            </Button>
+          </Stack>
+        )}
+
+        {mode === 'backupUsed' && verification !== null && verification.backupCodesLeft !== null && (
+          <Stack spacing={3}>
+            <Alert severity={verification.backupCodesLeft > 2 ? 'info' : 'warning'}>
+              {tObj.auth.backupUsed}
+              {' '}
+              {verification.backupCodesLeft === 0 ? tObj.auth.backupNoneLeft : tObj.auth.backupUsedHint}
+            </Alert>
+            <Box sx={{ p: 2, borderRadius: 1, border: '1px solid', borderColor: 'divider', bgcolor: 'action.hover' }}>
+              <Typography variant="body2" color="text.secondary">{tObj.auth.backupCodesLeft}</Typography>
+              <Typography variant="h5" sx={{ fontWeight: 700 }}>{verification.backupCodesLeft}</Typography>
+            </Box>
+            <Button
+              variant="contained"
+              size="large"
+              fullWidth
+              onClick={finishSignIn}
+              sx={{ py: 1.75, fontWeight: 600, fontSize: '1rem' }}
+            >
+              {tObj.auth.continue}
+            </Button>
+          </Stack>
         )}
 
         {/* noValidate: подсказки браузера для type="email" идут на его языке и раньше наших. */}

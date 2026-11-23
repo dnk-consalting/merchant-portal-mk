@@ -15,7 +15,7 @@
 
 ## 2. База данных
 
-Таблицы `auth` — `users` (в том числе право на DMS-ссылки, Р-132, и второй фактор, Р-141), `refresh_tokens`, `password_history`, `user_terminals` (терминалы сотрудника, Р-131), `mfa_challenges` (шаги входа между паролем и кодом, Р-141); схема — `../guides/application_description.md`
+Таблицы `auth` — `users` (в том числе право на DMS-ссылки, Р-132, и второй фактор, Р-141), `refresh_tokens`, `password_history`, `user_terminals` (терминалы сотрудника, Р-131), `mfa_challenges` (шаги входа между паролем и кодом, Р-141), `mfa_backup_codes` (резервные коды, Р-142); схема — `../guides/application_description.md`
 §4 (ER — §4.1, миграции — §4.3). Таблицу `companies` `auth` создаёт, если её ещё нет, и читает: существование
 компании при создании и переводе пользователя, название — для поиска в списке пользователей. Таблицу
 `terminals` (directory) читает: терминал сотрудника должен принадлежать его компании. Журнал пишется
@@ -95,7 +95,9 @@
       "passwordChangeRequired": false,
       "mfaRequired": false,
       "mfaSetupRequired": false,
-      "mfaToken": null
+      "mfaToken": null,
+      "backupCodes": null,
+      "backupCodesLeft": null
     }
     ```
     -   `expiresIn` — срок access-токена в секундах, из `pbl.security.jwt.expiration-ms` (`JWT_EXPIRATION_MS`),
@@ -251,24 +253,42 @@ TOTP по RFC 6238 — 6 цифр, шаг 30 секунд, HMAC-SHA1: Google Aut
     -   *Отказы*: `401 Sign-in step is invalid or expired. Sign in again.` — шаг неизвестен, истёк или израсходован,
         либо пользователь уже не `ACTIVE` или должен сменить пароль; `409 The second factor is already set up` —
         подключённый фактор заново не выдаётся, нужен сброс (§4.2): знающий пароль не подменит телефон владельца.
-2.  **Код** (`POST /api/v1/auth/mfa/verify`, тело `{ "mfaToken": "…", "code": "123456" }`).
-    -   *Проверка*: код текущего шага времени или соседнего (±30 секунд расхождения часов). Код шага не позже
-        последнего принятого не проходит — один код дважды не входит (8.5.1). Лимит адреса и локаут — общие с паролем
-        (§4.1): неверный код — неудача в обоих счётчиках, шесть неудач подряд, вместе с паролями, — локаут.
+2.  **Код** (`POST /api/v1/auth/mfa/verify`, тело `{ "mfaToken": "…", "code": "123456" }`). `code` — 6 цифр из
+    приложения или резервный код `XXXX-XXXX` (Р-142); сервер различает их по виду, у резервного регистр, дефис и
+    пробел не важны.
+    -   *Проверка кода из приложения*: код текущего шага времени или соседнего (±30 секунд расхождения часов). Код
+        шага не позже последнего принятого не проходит — один код дважды не входит (8.5.1).
+    -   *Проверка резервного кода*: равен ли он одному из неизрасходованных (BCrypt, до десяти сравнений); принятый
+        гаснет. Подключение резервным кодом не завершить — до подключения кодов нет.
+    -   Лимит адреса и локаут — общие с паролем (§4.1): неверный код любого вида — неудача в обоих счётчиках, шесть
+        неудач подряд, вместе с паролями, — локаут.
     -   *Ответ `200`* — пара токенов, как у входа (§4.1). Шаг гаснет, неудачи пользователя и его доля в лимите
-        адреса снимаются; первый принятый код подтверждает подключение — `USER` / `MFA_ENROLL`. Журнал входа —
-        `AUTH` / `LOGIN` / `SUCCESS` `Login successful, role …, second factor verified`.
+        адреса снимаются. Первый принятый код подтверждает подключение — `USER` / `MFA_ENROLL` — и ответ несёт
+        `backupCodes`: 10 резервных кодов, единственный раз, когда они видны. После входа резервным кодом ответ несёт
+        `backupCodesLeft` — сколько осталось. Журнал входа — `AUTH` / `LOGIN` / `SUCCESS` `Login successful, role …,
+        second factor verified` или `…, second factor verified with a backup code, N left`.
     -   *Отказы* — в порядке проверки:
 
         | Код | `message` | Когда | Журнал |
         |:---|:---|:---|:---|
-        | `400` | `Sign-in step token is required`, `Code is required`, `Code must be 6 digits` | не прошла валидация тела; неудачей не считается | — |
+        | `400` | `Sign-in step token is required`, `Code is required`, `Code must be 6 digits or a backup code` | не прошла валидация тела; неудачей не считается | — |
         | `401` | `Sign-in step is invalid or expired. Sign in again.` | шаг неизвестен, истёк или израсходован; пароль сбросили после шага | — |
         | `429` | `Too many login attempts. Please try again later.` | лимит адреса или идущая попытка в тот же логин, как у входа | как у входа |
         | `400` | `Account is not active. Please contact your administrator.` | статус не `ACTIVE` | `AUTH` / `LOGIN` / `DENIED` |
         | `400` | `Account is locked due to multiple failed login attempts. Please try again in N minutes.` | учётка в локауте | `AUTH` / `LOGIN` / `DENIED` |
         | `400` | `Set up the second factor first` | секрета нет — не вызван `/mfa/setup` | — |
-        | `400` | `Invalid code` | код неверный, вне окна или уже принятый; считается неудачей | `AUTH` / `LOGIN` / `DENIED` `Login refused: wrong second-factor code` |
+        | `400` | `Invalid code` | код неверный, вне окна или уже принятый; резервный — неверный или израсходованный; считается неудачей | `AUTH` / `LOGIN` / `DENIED` `Login refused: wrong second-factor code` или `… wrong backup code` |
+3.  **Резервные коды вошедшего** (Р-142) — с access-токеном, только свои; под `/users`, потому что `/auth` публичен.
+    -   `GET /api/v1/users/me/mfa-backup-codes` → `{ "mfaEnabled": true, "remaining": 7 }`; без подключённого
+        фактора — `mfaEnabled: false`, `remaining: 0`.
+    -   `POST /api/v1/users/me/mfa-backup-codes`, тело `{ "code": "123456" }` — свежий код **из приложения**, не
+        резервный: новые коды получает владелец телефона, а не завладевший сессией. Ответ `200`: `{ "codes": [10 кодов] }`;
+        прежние гаснут целиком, журнал — `USER` / `MFA_BACKUP_CODES` `New backup codes issued to their owner; the
+        previous ones are void`.
+    -   *Отказы `POST`*: `400 Code is required`, `Code must be 6 digits` — валидация; `403 Access denied` — учётка не
+        `ACTIVE`; `400 The second factor is not set up`; `400 Account is locked …`; `429` — лимит адреса;
+        `400 Invalid code` — неудача входа в общем счётчике, `USER` / `MFA_BACKUP_CODES` / `DENIED`
+        `New backup codes refused: wrong second-factor code`; `400 The second factor is not enabled` — фактор выключен.
 
 ### 4.2. Управление Пользователями (CRUD)
 Доступно ролям `SYSTEM_ADMIN` и `COMPANY_HEAD`. **Руководитель выдаёт и правит только роли ниже своей** —
@@ -425,8 +445,8 @@ TOTP по RFC 6238 — 6 цифр, шаг 30 секунд, HMAC-SHA1: Google Aut
 6.  **Сбросить второй фактор** (`POST /api/v1/users/{id}/mfa-reset`, без тела, Р-141) — потерянный телефон.
     -   *Кто*: как у правки — *админ* любого, *руководитель* `COMPANY_MANAGER`/`COMPANY_EMPLOYEE` своей компании.
         **Себе — никто**: иначе знающий пароль и захвативший сессию снял бы фактор с себя.
-    -   *Ответ `200`*: `UserResponse` с `mfaEnabled: false`. Секрет стирается, все refresh-токены и начатые входы
-        пользователя гасятся (§4.1.4); при следующем входе фактор подключают заново (§4.1.7). Неподключённый фактор
+    -   *Ответ `200`*: `UserResponse` с `mfaEnabled: false`. Секрет и резервные коды стираются, все refresh-токены и
+        начатые входы пользователя гасятся (§4.1.4); при следующем входе фактор подключают заново (§4.1.7). Неподключённый фактор
         сбрасывается так же.
     -   *Отказы*: `400 User not found` — нет такого или он удалён; `403 Access denied` — на тех же основаниях, что у
         правки (с записью `USER` / `MFA_RESET` / `DENIED` у неактивного актора и руководителя на чужой роли);
@@ -439,7 +459,8 @@ TOTP по RFC 6238 — 6 цифр, шаг 30 секунд, HMAC-SHA1: Google Aut
 - **[Auth.postman_collection.json](../../auth/Auth.postman_collection.json)** — все эндпоинты сервиса.
   Запросы `Login`, `Change Password`, `MFA Verify` и `Refresh` сохраняют access-токен в переменную коллекции
   `authToken` и refresh-токен в `refreshToken`, только если ответ их содержит; `Login` и `Change Password` со
-  вторым фактором сохраняют шаг входа в `mfaToken`, его берут `MFA Setup` и `MFA Verify` (код — из приложения); `Refresh` и `Logout` берут `{{refreshToken}}`
+  вторым фактором сохраняют шаг входа в `mfaToken`, его берут `MFA Setup` и `MFA Verify` (код — из приложения или
+  резервный); `Backup Codes Status` и `New Backup Codes` — с `authToken`; `Refresh` и `Logout` берут `{{refreshToken}}`
   оттуда. `Create User` сохраняет id созданного пользователя в `userId`. Токен из `Login` подставляют и в
   переменную `authToken` коллекции `directory`.
 

@@ -153,6 +153,20 @@ export interface TranslationDictionary {
       title: string;
       language: string;
     };
+    /** Второй фактор вошедшего: остаток резервных кодов и новый набор по коду из приложения (Р-142). */
+    mfa: {
+      title: string;
+      notSetUp: string;
+      hint: string;
+      remaining: string;
+      lowWarning: string;
+      create: string;
+      dialogTitle: string;
+      dialogText: string;
+      saveCodes: string;
+      done: string;
+      failed: string;
+    };
   };
   payByLink: {
     title: string;
@@ -754,6 +768,21 @@ export interface TranslationDictionary {
     /** Шаг входа между паролем и кодом живёт 5 минут; истёк — вход заново. */
     mfaStepExpired: string;
     mfaLoadFailed: string;
+    /** Резервные коды второго фактора (Р-142): ввод вместо кода из приложения, выдача при подключении, остаток. */
+    backupCodeLabel: string;
+    backupCodeFormat: string;
+    backupCodeIntro: string;
+    useBackupCode: string;
+    useAppCode: string;
+    backupCodesIntro: string;
+    backupCodesSaved: string;
+    continue: string;
+    backupUsed: string;
+    backupCodesLeft: string;
+    backupUsedHint: string;
+    backupNoneLeft: string;
+    downloadCodes: string;
+    backupCodesFileTitle: string;
     /** Смена пароля, заданного не владельцем, при входе (PCI DSS 8.3.5, Р-100). */
     passwordChangeRequired: string;
     newPasswordLabel: string;
@@ -926,7 +955,7 @@ export const translations: Record<Language, TranslationDictionary> = {
     },
     settings: {
       title: 'Settings',
-      subtitle: 'Your company name and the interface language. Everything else lives on its own page.',
+      subtitle: 'Your company name, the interface language and the backup codes of your second factor. Everything else lives on its own page.',
       saveSuccess: 'Settings saved successfully!',
       saveChanges: 'Save Changes',
       account: {
@@ -942,6 +971,19 @@ export const translations: Record<Language, TranslationDictionary> = {
       display: {
         title: 'Interface',
         language: 'System Language',
+      },
+      mfa: {
+        title: 'Second factor',
+        notSetUp: 'The second factor is not set up: it is set up at sign-in.',
+        hint: 'Backup codes sign you in when the phone is lost, each one once.',
+        remaining: 'Backup codes left',
+        lowWarning: 'Few backup codes left: create new ones.',
+        create: 'Create new codes',
+        dialogTitle: 'New backup codes',
+        dialogText: 'The previous codes stop working. Enter the code from your authenticator app to confirm.',
+        saveCodes: 'Save these codes somewhere safe, away from your phone. They will not be shown again.',
+        done: 'Done',
+        failed: 'Could not create new codes',
       },
     },
     payByLink: {
@@ -1440,6 +1482,7 @@ export const translations: Record<Language, TranslationDictionary> = {
         STATUS_CHANGE: 'Status change', START: 'Service start', STOP: 'Service stop',
         EXPORT: 'Export', VERIFY: 'Integrity check',
         MFA_ENROLL: 'Second factor set-up', MFA_RESET: 'Second factor reset',
+        MFA_BACKUP_CODES: 'New backup codes',
       },
       entities: {
         COMPANY: 'Company', TERMINAL: 'Terminal', USER: 'User', AUTH: 'Authentication', PAYMENT_LINK: 'Payment link',
@@ -1500,6 +1543,20 @@ export const translations: Record<Language, TranslationDictionary> = {
       mfaConfirmAndSignIn: 'Confirm and sign in',
       mfaStepExpired: 'Sign-in took too long. Sign in again.',
       mfaLoadFailed: 'Could not start the second-factor set-up. Sign in again.',
+      backupCodeLabel: 'Backup code',
+      backupCodeFormat: 'A backup code looks like XXXX-XXXX.',
+      backupCodeIntro: 'Enter one of your backup codes. Each code works once.',
+      useBackupCode: 'No access to your phone? Use a backup code',
+      useAppCode: 'Use the code from the app',
+      backupCodesIntro: 'Save these backup codes somewhere safe, away from your phone. Each one signs you in once if the phone is lost. They will not be shown again.',
+      backupCodesSaved: 'I have saved the codes',
+      continue: 'Continue',
+      backupUsed: 'You signed in with a backup code. It no longer works.',
+      backupCodesLeft: 'Backup codes left',
+      backupUsedHint: 'Create new codes in Settings while your phone is at hand.',
+      backupNoneLeft: 'No backup codes left: create new ones in Settings as soon as your phone is at hand.',
+      downloadCodes: 'Download .txt',
+      backupCodesFileTitle: 'MilliKart Merchant Portal backup codes',
       passwordChangeRequired: 'Your password was set by an administrator. Choose your own password to sign in.',
       newPasswordLabel: 'New password',
       confirmPasswordLabel: 'Repeat the new password',
@@ -1639,7 +1696,7 @@ export const translations: Record<Language, TranslationDictionary> = {
     },
     settings: {
       title: 'Tənzimləmələr',
-      subtitle: 'Şirkətinizin adı və interfeys dili. Qalan bölmələr öz səhifələrində idarə olunur.',
+      subtitle: 'Şirkətinizin adı, interfeys dili və ikinci faktorun ehtiyat kodları. Qalan bölmələr öz səhifələrində idarə olunur.',
       saveSuccess: 'Tənzimləmələr uğurla yadda saxlanıldı!',
       saveChanges: 'Dəyişiklikləri Yadda Saxla',
       account: {
@@ -1655,6 +1712,19 @@ export const translations: Record<Language, TranslationDictionary> = {
       display: {
         title: 'İnterfeys',
         language: 'Sistem Dili',
+      },
+      mfa: {
+        title: 'İkinci faktor',
+        notSetUp: 'İkinci faktor qoşulmayıb: o, girişdə qoşulur.',
+        hint: 'Ehtiyat kodlar telefon itəndə daxil olmağa imkan verir, hər biri bir dəfə.',
+        remaining: 'Qalan ehtiyat kodlar',
+        lowWarning: 'Ehtiyat kod az qalıb: yenilərini yaradın.',
+        create: 'Yeni kodlar yarat',
+        dialogTitle: 'Yeni ehtiyat kodlar',
+        dialogText: 'Əvvəlki kodlar işləməyəcək. Təsdiq üçün autentifikator tətbiqindəki kodu daxil edin.',
+        saveCodes: 'Bu kodları telefondan ayrı, etibarlı yerdə saxlayın. Onlar bir daha göstərilməyəcək.',
+        done: 'Hazırdır',
+        failed: 'Yeni kodları yaratmaq alınmadı',
       },
     },
     payByLink: {
@@ -2153,6 +2223,7 @@ export const translations: Record<Language, TranslationDictionary> = {
         STATUS_CHANGE: 'Statusun dəyişməsi', START: 'Servisin işə salınması', STOP: 'Servisin dayandırılması',
         EXPORT: 'İxrac', VERIFY: 'Bütövlük yoxlaması',
         MFA_ENROLL: 'İkinci faktorun qoşulması', MFA_RESET: 'İkinci faktorun sıfırlanması',
+        MFA_BACKUP_CODES: 'Yeni ehtiyat kodlar',
       },
       entities: {
         COMPANY: 'Şirkət', TERMINAL: 'Terminal', USER: 'İstifadəçi', AUTH: 'Autentifikasiya', PAYMENT_LINK: 'Ödəniş linki',
@@ -2213,6 +2284,20 @@ export const translations: Record<Language, TranslationDictionary> = {
       mfaConfirmAndSignIn: 'Təsdiqlə və daxil ol',
       mfaStepExpired: 'Giriş çox uzun çəkdi. Yenidən daxil olun.',
       mfaLoadFailed: 'İkinci faktorun qoşulmasına başlamaq alınmadı. Yenidən daxil olun.',
+      backupCodeLabel: 'Ehtiyat kod',
+      backupCodeFormat: 'Ehtiyat kod XXXX-XXXX şəklindədir.',
+      backupCodeIntro: 'Ehtiyat kodlarınızdan birini daxil edin. Hər kod bir dəfə işləyir.',
+      useBackupCode: 'Telefona çıxış yoxdur? Ehtiyat kodla daxil olun',
+      useAppCode: 'Tətbiqdəki kodu daxil edin',
+      backupCodesIntro: 'Bu ehtiyat kodları telefondan ayrı, etibarlı yerdə saxlayın. Telefon itərsə, hər biri sizi bir dəfə daxil edəcək. Onlar bir daha göstərilməyəcək.',
+      backupCodesSaved: 'Kodları saxladım',
+      continue: 'Davam et',
+      backupUsed: 'Ehtiyat kodla daxil oldunuz. Bu kod artıq işləmir.',
+      backupCodesLeft: 'Qalan ehtiyat kodlar',
+      backupUsedHint: 'Telefon əlinizdə olanda «Tənzimləmələr» bölməsində yeni kodlar yaradın.',
+      backupNoneLeft: 'Ehtiyat kod qalmayıb: telefon əlinizə keçən kimi «Tənzimləmələr» bölməsində yenilərini yaradın.',
+      downloadCodes: '.txt yüklə',
+      backupCodesFileTitle: 'MilliKart Merchant Portal ehtiyat kodları',
       passwordChangeRequired: 'Parolunuzu administrator təyin edib. Daxil olmaq üçün öz parolunuzu seçin.',
       newPasswordLabel: 'Yeni parol',
       confirmPasswordLabel: 'Yeni parolu təkrarlayın',
@@ -2352,7 +2437,7 @@ export const translations: Record<Language, TranslationDictionary> = {
     },
     settings: {
       title: 'Настройки',
-      subtitle: 'Название вашей компании и язык интерфейса. Остальные разделы — на своих страницах.',
+      subtitle: 'Название вашей компании, язык интерфейса и резервные коды второго фактора. Остальные разделы — на своих страницах.',
       saveSuccess: 'Настройки успешно сохранены!',
       saveChanges: 'Сохранить изменения',
       account: {
@@ -2368,6 +2453,19 @@ export const translations: Record<Language, TranslationDictionary> = {
       display: {
         title: 'Интерфейс',
         language: 'Язык системы',
+      },
+      mfa: {
+        title: 'Второй фактор',
+        notSetUp: 'Второй фактор не подключён: его подключают при входе.',
+        hint: 'Резервные коды впускают в портал, если телефон потерян, — каждый один раз.',
+        remaining: 'Осталось резервных кодов',
+        lowWarning: 'Резервных кодов осталось мало — создайте новые.',
+        create: 'Создать новые коды',
+        dialogTitle: 'Новые резервные коды',
+        dialogText: 'Прежние коды перестанут действовать. Для подтверждения введите код из приложения-аутентификатора.',
+        saveCodes: 'Сохраните коды в надёжном месте, отдельно от телефона. Больше они не покажутся.',
+        done: 'Готово',
+        failed: 'Не удалось создать новые коды',
       },
     },
     payByLink: {
@@ -2866,6 +2964,7 @@ export const translations: Record<Language, TranslationDictionary> = {
         STATUS_CHANGE: 'Смена статуса', START: 'Запуск сервиса', STOP: 'Остановка сервиса',
         EXPORT: 'Выгрузка', VERIFY: 'Проверка целостности',
         MFA_ENROLL: 'Подключение второго фактора', MFA_RESET: 'Сброс второго фактора',
+        MFA_BACKUP_CODES: 'Новые резервные коды',
       },
       entities: {
         COMPANY: 'Компания', TERMINAL: 'Терминал', USER: 'Пользователь', AUTH: 'Вход в систему', PAYMENT_LINK: 'Платёжная ссылка',
@@ -2926,6 +3025,20 @@ export const translations: Record<Language, TranslationDictionary> = {
       mfaConfirmAndSignIn: 'Подтвердить и войти',
       mfaStepExpired: 'Вход занял слишком много времени. Войдите снова.',
       mfaLoadFailed: 'Не удалось начать подключение второго фактора. Войдите снова.',
+      backupCodeLabel: 'Резервный код',
+      backupCodeFormat: 'Резервный код выглядит как XXXX-XXXX.',
+      backupCodeIntro: 'Введите один из резервных кодов. Каждый срабатывает один раз.',
+      useBackupCode: 'Нет доступа к телефону? Войти резервным кодом',
+      useAppCode: 'Ввести код из приложения',
+      backupCodesIntro: 'Сохраните резервные коды в надёжном месте, отдельно от телефона. Если телефон потеряется, каждый код один раз впустит вас в портал. Больше они не покажутся.',
+      backupCodesSaved: 'Я сохранил коды',
+      continue: 'Продолжить',
+      backupUsed: 'Вы вошли резервным кодом, он больше не действует.',
+      backupCodesLeft: 'Осталось резервных кодов',
+      backupUsedHint: 'Создайте новые коды в «Настройках», когда телефон будет под рукой.',
+      backupNoneLeft: 'Резервных кодов не осталось: создайте новые в «Настройках», как только телефон будет под рукой.',
+      downloadCodes: 'Скачать .txt',
+      backupCodesFileTitle: 'Резервные коды MilliKart Merchant Portal',
       passwordChangeRequired: 'Пароль вам задал администратор. Чтобы войти, придумайте свой.',
       newPasswordLabel: 'Новый пароль',
       confirmPasswordLabel: 'Повторите новый пароль',

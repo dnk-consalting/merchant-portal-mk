@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- Р-142: резервные коды второго фактора — вход без телефона. В базе только BCrypt-хэш кода, как у пароля:
+         у кода 40 бит, и быстрый хэш из дампа подбирался бы. used_at ставит вход этим кодом; новый набор и сброс
+         фактора удаляют строки пользователя. Таблицей владеет только auth; преконтроли — по конвенции P1-2. -->
+    <changeSet id="15-auth-mfa-backup-codes" author="millikart">
+        <preConditions onFail="MARK_RAN">
+            <not>
+                <tableExists tableName="mfa_backup_codes"/>
+            </not>
+        </preConditions>
+        <createTable tableName="mfa_backup_codes">
+            <column name="id" type="uuid">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="user_id" type="uuid">
+                <constraints nullable="false"/>
+            </column>
+            <!-- BCrypt — всегда 60 символов. -->
+            <column name="code_hash" type="varchar(60)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="created_at" type="timestamp">
+                <constraints nullable="false"/>
+            </column>
+            <column name="used_at" type="timestamp"/>
+        </createTable>
+    </changeSet>
+
+    <changeSet id="15-auth-mfa-backup-codes-index-user" author="millikart">
+        <preConditions onFail="MARK_RAN">
+            <tableExists tableName="mfa_backup_codes"/>
+            <not>
+                <indexExists tableName="mfa_backup_codes" indexName="idx_mfa_backup_codes_user"/>
+            </not>
+        </preConditions>
+        <createIndex tableName="mfa_backup_codes" indexName="idx_mfa_backup_codes_user">
+            <column name="user_id"/>
+        </createIndex>
+    </changeSet>
+
+    <changeSet id="15-auth-mfa-backup-codes-user-fk" author="millikart">
+        <preConditions onFail="CONTINUE">
+            <tableExists tableName="mfa_backup_codes"/>
+            <tableExists tableName="users"/>
+            <not>
+                <foreignKeyConstraintExists foreignKeyName="fk_mfa_backup_codes_user" foreignKeyTableName="mfa_backup_codes"/>
+            </not>
+        </preConditions>
+        <addForeignKeyConstraint baseTableName="mfa_backup_codes" baseColumnNames="user_id"
+                                 constraintName="fk_mfa_backup_codes_user"
+                                 referencedTableName="users" referencedColumnNames="id"
+                                 onDelete="CASCADE"/>
+    </changeSet>
+
+</databaseChangeLog>

@@ -160,13 +160,13 @@ PostgreSQL         ← схема из Liquibase, ddl-auto: validate
 
 | Пакет | Что внутри |
 |:---|:---|
-| `controller` | `AuthController` (вход, смена пароля при входе, второй фактор, обновление пары токенов, выход), `UserController` |
-| `service` | `AuthService` (вход, смена пароля при входе — Р-100, код второго фактора — Р-141, ротация и отзыв refresh-токенов), `MfaService` (второй фактор: шаги входа, секрет TOTP, проверка кода — Р-141), `RefreshTokenService` (хранилище refresh-токенов: выпуск, поиск, отзыв, уборка), `UserService` (пользователи; отзыв сессий при блокировке, сбросе пароля, сбросе второго фактора и удалении), `InactiveAccountService` (блокировка учёток без активности 90 дней, Р-101), `PasswordHistoryService` (запрет четырёх последних паролей, Р-102) |
-| `security` | `LoginRateLimiter` — лимит неудачных входов с одного адреса, счётчики в памяти; `Totp` — коды по RFC 6238 и base32 (Р-141) |
+| `controller` | `AuthController` (вход, смена пароля при входе, второй фактор, обновление пары токенов, выход), `UserController`, `MfaBackupCodesController` (резервные коды вошедшего — Р-142) |
+| `service` | `AuthService` (вход, смена пароля при входе — Р-100, код второго фактора — Р-141, ротация и отзыв refresh-токенов), `MfaService` (второй фактор: шаги входа, секрет TOTP, проверка кода — Р-141, резервные коды — Р-142), `RefreshTokenService` (хранилище refresh-токенов: выпуск, поиск, отзыв, уборка), `UserService` (пользователи; отзыв сессий при блокировке, сбросе пароля, сбросе второго фактора и удалении), `InactiveAccountService` (блокировка учёток без активности 90 дней, Р-101), `PasswordHistoryService` (запрет четырёх последних паролей, Р-102) |
+| `security` | `LoginRateLimiter` — лимит неудачных входов с одного адреса, счётчики в памяти; `Totp` — коды по RFC 6238 и base32 (Р-141); `BackupCodes` — формат резервных кодов (Р-142) |
 | `bootstrap` | `AdminBootstrapRunner` — разовое создание первого `SYSTEM_ADMIN` |
 | `scheduler` | `RefreshTokenCleanupScheduler`, `InactiveAccountScheduler` (Р-101) |
-| `domain` | `User`, `RefreshToken`, `MfaChallenge`, `PasswordHistory`, `Company` (только проверка существования компании) |
-| `repository` | `UserRepository` (поиск пользователей с названием компании — нативным запросом), `RefreshTokenRepository`, `MfaChallengeRepository`, `PasswordHistoryRepository`, `CompanyRepository` |
+| `domain` | `User`, `RefreshToken`, `MfaChallenge`, `MfaBackupCode`, `PasswordHistory`, `Company` (только проверка существования компании) |
+| `repository` | `UserRepository` (поиск пользователей с названием компании — нативным запросом), `RefreshTokenRepository`, `MfaChallengeRepository`, `MfaBackupCodeRepository`, `PasswordHistoryRepository`, `CompanyRepository` |
 
 Контракты — [`auth.md`](../modules/auth.md).
 
@@ -227,6 +227,7 @@ erDiagram
     companies |o--o{ users : "company_id"
     users ||--o{ refresh_tokens : "user_id, каскад на удаление"
     users ||--o{ mfa_challenges : "user_id, каскад на удаление"
+    users ||--o{ mfa_backup_codes : "user_id, каскад на удаление"
     users ||--o{ password_history : "user_id, каскад на удаление"
     users ||--o{ user_terminals : "user_id, каскад на удаление"
     terminals ||--o{ user_terminals : "terminal_id, без внешнего ключа"
@@ -306,6 +307,14 @@ erDiagram
         timestamp created_at
         timestamp expires_at "5 минут от верного пароля"
         timestamp used_at "Израсходован принятым кодом"
+    }
+
+    mfa_backup_codes {
+        uuid id PK
+        uuid user_id FK "→ users.id"
+        varchar code_hash "BCrypt резервного кода (Р-142)"
+        timestamp created_at
+        timestamp used_at "Израсходован входом"
     }
 
     terminals {
@@ -487,6 +496,7 @@ erDiagram
 | `auth` | `012-refresh-session-start.xml` | `refresh_tokens.session_started_at`, `NOT NULL`; существующим строкам — их `issued_at` (Р-140) |
 | `auth` | `013-user-mfa.xml` | `users.mfa_secret`, `mfa_enabled_at`, `mfa_last_step`; у существующих пусто — фактор подключают при следующем входе (Р-141) |
 | `auth` | `014-mfa-challenges.xml` | `mfa_challenges`, индекс по `user_id`, внешний ключ на `users` с каскадом (Р-141) |
+| `auth` | `015-mfa-backup-codes.xml` | `mfa_backup_codes`, индекс по `user_id`, внешний ключ на `users` с каскадом (Р-142) |
 | `directory` | `003-directory-schema.xml` | `companies` и `terminals` (с колонкой `password`, её удаляет `008`), если их ещё нет; недостающие аудит-колонки (`created_by`, `created_at`, `updated_by`, `updated_at`) к таблицам, созданным другим сервисом; `audit_logs` в исходном виде, без `client_ip` и `outcome` |
 | `directory` | `004-audit-log-ip-and-indexes.xml` | `audit_logs.client_ip`, `outcome` (по умолчанию `SUCCESS`) и индексы `(company_id, created_at desc)`, `(entity_type, entity_id)`, `(created_at desc)` |
 | `directory` | `005-terminal-status.xml` | `terminals.status`, по умолчанию `ACTIVE` |

@@ -80,7 +80,7 @@ Login из Auth-коллекции. Контракт эквайера — ист
 | PostgreSQL | **16** — в проде и в тестовом контейнере (Р-73); часть тестов на H2 (§11) | `project_docs/guides/deployment_guide.md` §4.5, `PostgresTestContainer` |
 | Oracle JDBC | `ojdbc11` 23.4, только `ecom` | `ecom/build.gradle` |
 | Testcontainers | 1.20.6 — выше BOM Boot, причина в §11 | `build.gradle` |
-| Gradle wrapper | 8.5 | `gradle/wrapper/gradle-wrapper.properties` |
+| Gradle wrapper | 8.14.5 | `gradle/wrapper/gradle-wrapper.properties` |
 | Lombok | 1.18.30 | во всех модулях |
 
 **Frontend**
@@ -174,7 +174,7 @@ export JWT_SECRET="$(openssl rand -base64 48)"   # одно значение н�
 
    | Таблица | Схему пишет | Кто ещё читает или пишет |
    |:---|:---|:---|
-   | `users`, `refresh_tokens`, `password_history`, `mfa_challenges` | `auth` | — |
+   | `users`, `refresh_tokens`, `password_history`, `mfa_challenges`, `mfa_backup_codes` | `auth` | — |
    | `user_terminals` | `auth` (создаёт и пишет), `directory` и `pbl` (создают, если ещё нет) | терминалы сотрудника (Р-131): `auth` читает `terminals`, чтобы проверить компанию терминала; `directory`, `pbl` и `ecom` строят по ним скоуп сотрудника, `directory` снимает назначения терминала, перенесённого в другую компанию |
    | `companies` | `auth` (создаёт) + `directory` (дополняет), `pbl` (создаёт, если ещё нет, и добавляет колонки кредов) | `auth` читает название нативным запросом для поиска пользователей; `pbl` и `ecom` — креды компании к провайдеру (Р-93, Р-124); `ecom` — логин компании для скоупа выписки (Р-97) |
    | `terminals` | `directory` (создаёт и дополняет), `pbl` (создаёт, если ещё нет; `terminal_rid` и `dms_allowed`, если ещё нет), `ecom` (`status_source`, `merchant_rid`, если ещё нет); внешний ключ на `companies` — `auth` | `pbl` читает напрямую, минуя REST; `ecom` — терминал мерчанта заказа выписки (Р-124) |
@@ -290,6 +290,7 @@ origin через nginx. Обоснование — в комментариях 
 |:---|:---:|:---:|:---:|:---:|:---:|
 | `POST/GET/PATCH/DELETE /users` | ✅ все | ✅ своя компания | ❌ | ❌ | ❌ |
 | `POST /users/{id}/mfa-reset` (Р-141) | ✅ все, кроме себя | ✅ менеджеры и сотрудники своей компании | ❌ | ❌ | ❌ |
+| `GET/POST /users/me/mfa-backup-codes` (Р-142) | ✅ свои | ✅ свои | ✅ свои | ✅ свои | ✅ свои |
 | `GET /companies` (список) | ✅ | ❌ | ❌ | ❌ | ✅ |
 | `GET /companies/{id}` | ✅ | ✅ своя | ✅ своя | ✅ своя | ✅ |
 | `POST/PATCH/DELETE /companies`, `GET /companies/provider-logins` | ✅ | ❌ | ❌ | ❌ | ❌ |
@@ -529,7 +530,7 @@ axios-клиент, shadcn/Radix, Tailwind, страницы на моках, с
 | `src/app/auth/session.ts` | хранилище: access-токен — модульная переменная (**только память**), refresh — `localStorage['mp_refresh_token']`, момент последнего действия пользователя — `localStorage['mp_last_activity']` (общий для вкладок), профиль `{ email, role, companyId?, dmsLinksAllowed }` (email, companyId и право на DMS-ссылки — из claims JWT, роль — из поля `role` ответа через `parseRole`); `applyLoginResponse` fail-closed, `clearSession`, подписка для `useSyncExternalStore`; событие `storage` гасит сессию в других вкладках при выходе; конец сессии из `sessionExpiresIn` (Р-140) — только в памяти: 401 от `/refresh` после него `client.ts` отмечает, и форма входа пишет о предельном сроке |
 | `src/app/auth/idle.ts` | выход по простою (PCI DSS 8.2.8, Р-99): 15 минут без ввода — `logout` и сообщение на форме входа. Действием считается только ввод пользователя, не запросы к API. Пока пользователь работает, пара обновляется, если старше 5 минут: сервер гасит refresh-токен через 20 минут без обновления (`AUTH_REFRESH_TTL`) |
 | `src/app/api/client.ts` | request-интерсептор берёт токен из памяти (к `/api/v1/auth/*` не прикладывает); response-интерсептор на 401: `/login`, `/refresh`, `/logout`, `/change-password`, `/mfa/*` — не трогать; уже повторяли — `clearSession`; иначе `refreshSession()` (**single-flight**, один промис на все параллельные 401) и повтор запроса. 401 от `/refresh` и нераспознанная роль сбрасывают сессию, сетевая ошибка — нет |
-| `src/app/context/AuthContext.tsx` | `AuthProvider`: при загрузке с refresh-токеном показывает загрузку и зовёт `/refresh` (сессия восстанавливается без формы логина) — только если последнее действие было меньше 15 минут назад, иначе гасит токен (`POST /logout`) и показывает форму входа; `login` → `applyLoginResponse` (пароль, заданный не владельцем, — `AuthError('PASSWORD_CHANGE_REQUIRED')`, и форма входа просит сменить его: `changePassword`, Р-100); со вторым фактором `login` и `changePassword` возвращают шаг входа (`MfaStep`), форма входа зовёт `setupMfa` (QR-код, секрет только в состоянии формы) и `verifyMfa`, сессию начинает принятый код (Р-141); `logout` — сброс состояния сразу, `POST /logout` вдогонку (ошибка логируется). `isAuthenticated` — по access-токену в памяти |
+| `src/app/context/AuthContext.tsx` | `AuthProvider`: при загрузке с refresh-токеном показывает загрузку и зовёт `/refresh` (сессия восстанавливается без формы логина) — только если последнее действие было меньше 15 минут назад, иначе гасит токен (`POST /logout`) и показывает форму входа; `login` → `applyLoginResponse` (пароль, заданный не владельцем, — `AuthError('PASSWORD_CHANGE_REQUIRED')`, и форма входа просит сменить его: `changePassword`, Р-100); со вторым фактором `login` и `changePassword` возвращают шаг входа (`MfaStep`), форма входа зовёт `setupMfa` (QR-код, секрет только в состоянии формы) и `verifyMfa`; сессию начинает `complete()` его результата — после экрана резервных кодов или их остатка (Р-141, Р-142), иначе `PublicOnlyRoute` увёл бы со страницы входа; `logout` — сброс состояния сразу, `POST /logout` вдогонку (ошибка логируется). `isAuthenticated` — по access-токену в памяти |
 | `src/app/auth/routeAccess.ts` | **единственная** раскладка «маршрут → роли» (`/users`: `SYSTEM_ADMIN`, `COMPANY_HEAD`; `/companies`: `SYSTEM_ADMIN`, `AUDITOR`; `/audit-logs`: `SYSTEM_ADMIN`, `AUDITOR`, `COMPANY_HEAD`, `COMPANY_MANAGER`; остальное — всем вошедшим). Читают `RoleRoute` и `Sidebar` |
 | `src/app/auth/actionAccess.ts` | роли **действий**, зеркало констант сервисов: `TERMINAL_CREATE_ROLES` и `TERMINAL_WRITE_ROLES` (`TerminalService`). Кнопка видна ровно тогда, когда бэкенд её примет (Р-62); меняешь набор на бэкенде — меняй и здесь. Возврата и списания здесь нет: их кнопки решает сервер (`actions` операции, Р-123) |
 | `src/app/auth/guards.tsx` | `ProtectedRoute` (→ `/login`, адрес кладётся в `state.from`), `PublicOnlyRoute` (→ `state.from` или `/`; `returnPathFrom` принимает только свой относительный путь), `RoleRoute` (роль не подходит → `ForbiddenPage`, не редирект и не белый экран) |
@@ -546,7 +547,8 @@ axios-клиент, shadcn/Radix, Tailwind, страницы на моках, с
 почте»), в `PaymentLink` нет; карта и стадия DMS — у операций ссылки, списание — с карточки операции.
 `HomePage` ничего не считает сама: сводку отдаёт `GET /api/v1/ecom/dashboard/summary`, последние заказы —
 первая страница выписки за тот же период с `size: 10`. На `SettingsPage` живы только название
-компании (одиночный `GET /api/v1/companies/{id}` по `companyId` из токена) и язык. Удалённые метрики,
+компании (одиночный `GET /api/v1/companies/{id}` по `companyId` из токена), язык и резервные коды второго фактора
+(остаток и новый набор, Р-142). Удалённые метрики,
 вкладки настроек и сочинённую историю не возвращать (P3-6, P3-7).
 
 **Главная — весь эквайринг компании** (Р-91): оплаты картой по всем мерчантам логина компании по выписке
@@ -714,8 +716,9 @@ grep -rn "autoFocus" app/pages/*.tsx                                 # ниче�
   только `SUCCESS`, поэтому DMS без суммы, частично возвращённый до Р-139, возвращают у провайдера. Статистика по
   ссылкам и чек считают такие платежи от авторизованной суммы.
 - **Первое подключение второго фактора доверяет паролю** (Р-141): кто первым после выкладки или сброса войдёт с
-  верным паролем, тот и подключит свой телефон. Резервных кодов нет — потерянный телефон сбрасывает администратор
-  или руководитель; единственному администратору — администратор сервера в базе (`deployment_guide.md` §20.3a).
+  верным паролем, тот и подключит свой телефон — и получит резервные коды. Без телефона входят резервным кодом
+  (Р-142); без телефона и кодов фактор сбрасывает администратор или руководитель, единственному администратору —
+  администратор сервера в базе (`deployment_guide.md` §20.3a).
   `AUTH_MFA_ENABLED=false` пускает всех по одному паролю — только на минуты аварии. Ключ `MFA_ENCRYPTION_KEY` не
   ротируется: с новым ключом фактор подключают заново все.
 - **Вход.** Верный пароль к заблокированному аккаунту отличим от неверного (принято при P3-Auth);
@@ -992,6 +995,9 @@ grep -rn "autoFocus" app/pages/*.tsx                                 # ниче�
 - **Секрет второго фактора — только шифротекст `MfaService`** (Р-141): клиент видит его один раз, в ответе
   `/mfa/setup`; в лог, журнал и ответы `UserResponse` он не попадает. Подключённый фактор `/mfa/setup` заново не
   выдаёт — новый секрет только после сброса.
+- **Резервные коды — только BCrypt-хэши** (Р-142): у кода около 40 бит, и быстрый хэш из дампа подбирался бы.
+  Отсюда до десяти сравнений BCrypt на вход резервным кодом — не «оптимизировать» на SHA-256. Новый набор — только
+  по коду из приложения, не резервному; DTO с кодами — с маскирующим `toString()`.
 - **Журнал нельзя править из приложения** (Р-42). У `AuditLogRepository` только `save`, у
   `AuditLogQueryRepository` только `findAll(Specification, Pageable)` — `JpaSpecificationExecutor` не
   наследовать, в нём `delete(Specification)`. `AuditLog` — `@Immutable`, билдер не задаёт `id`: `save`

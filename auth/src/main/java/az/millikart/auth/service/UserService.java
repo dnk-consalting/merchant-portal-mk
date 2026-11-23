@@ -5,6 +5,7 @@ import az.millikart.auth.dto.CreateUserRequest;
 import az.millikart.auth.dto.UpdateUserRequest;
 import az.millikart.auth.dto.UserResponse;
 import az.millikart.auth.repository.CompanyRepository;
+import az.millikart.auth.repository.MfaBackupCodeRepository;
 import az.millikart.auth.repository.MfaChallengeRepository;
 import az.millikart.auth.repository.UserRepository;
 import az.millikart.auth.repository.UserTerminalRepository;
@@ -67,6 +68,7 @@ public class UserService {
     private final PasswordHistoryService passwordHistory;
     private final UserTerminalRepository userTerminals;
     private final MfaChallengeRepository mfaChallenges;
+    private final MfaBackupCodeRepository mfaBackupCodes;
 
     public UserService(UserRepository userRepository,
                        CompanyRepository companyRepository,
@@ -76,7 +78,8 @@ public class UserService {
                        ApplicationEventPublisher eventPublisher,
                        PasswordHistoryService passwordHistory,
                        UserTerminalRepository userTerminals,
-                       MfaChallengeRepository mfaChallenges) {
+                       MfaChallengeRepository mfaChallenges,
+                       MfaBackupCodeRepository mfaBackupCodes) {
         this.userRepository = userRepository;
         this.companyRepository = companyRepository;
         this.passwordEncoder = passwordEncoder;
@@ -86,6 +89,7 @@ public class UserService {
         this.passwordHistory = passwordHistory;
         this.userTerminals = userTerminals;
         this.mfaChallenges = mfaChallenges;
+        this.mfaBackupCodes = mfaBackupCodes;
     }
 
     @Transactional
@@ -437,6 +441,8 @@ public class UserService {
         user.setMfaLastStep(null);
         user = userRepository.save(user);
         mfaChallenges.deleteAllByUserId(user.getId());
+        // Резервные коды принадлежат сброшенному фактору: новый набор выдаст повторное подключение (Р-142).
+        mfaBackupCodes.deleteAllByUserId(user.getId());
         int revoked = refreshTokenService.revokeAllForUser(user.getId(), Instant.now());
 
         eventPublisher.publishEvent(AuditEvent.of(AuditEntity.USER, user.getId().toString(), AuditAction.MFA_RESET,

@@ -7,11 +7,15 @@ import az.millikart.auth.dto.ChangePasswordRequest;
 import az.millikart.auth.dto.LoginRequest;
 import az.millikart.auth.dto.LoginResponse;
 import az.millikart.auth.dto.LogoutRequest;
+import az.millikart.auth.dto.MfaBackupCodesResponse;
+import az.millikart.auth.dto.MfaBackupCodesStatus;
+import az.millikart.auth.dto.MfaCodeRequest;
 import az.millikart.auth.dto.MfaSetupRequest;
 import az.millikart.auth.dto.MfaSetupResponse;
 import az.millikart.auth.dto.MfaVerifyRequest;
 import az.millikart.auth.dto.RefreshRequest;
 import az.millikart.auth.repository.UserRepository;
+import az.millikart.auth.security.BackupCodes;
 import az.millikart.auth.security.LoginRateLimiter;
 import az.millikart.common.audit.AuditAction;
 import az.millikart.common.audit.AuditEntity;
@@ -19,12 +23,16 @@ import az.millikart.common.audit.AuditEvent;
 import az.millikart.common.audit.AuditLogService;
 import az.millikart.common.exception.BusinessException;
 import az.millikart.common.exception.ConflictException;
+import az.millikart.common.exception.InvalidStateException;
 import az.millikart.common.exception.UnauthorizedException;
 import az.millikart.common.security.JwtProvider;
+import az.millikart.common.security.UserPrincipal;
 
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
+import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -134,7 +142,7 @@ public class AuthService {
     // Пароль доказан: сессия — сразу или после кода второго фактора (PCI DSS 8.4.2, Р-141).
     private LoginResponse afterPassword(User user, Instant now) {
         if (!mfaService.isEnabled()) {
-            return startSession(user, now, false);
+            return startSession(user, now, null);
         }
         String mfaToken = mfaService.issueChallenge(user.getId(), now);
         boolean setupRequired = user.getMfaEnabledAt() == null;
@@ -204,18 +212,15 @@ public class AuthService {
                 throw new BusinessException("Set up the second factor first");
             }
 
+            // Не 6 цифр — резервный код (Р-142); им подключение не завершить: до него кодов нет.
+            if (!isTotpCode(request.code())) {
+                return verifyBackupCode(user, challenge, request.code(), clientIp, now);
+            }
             OptionalLong step = mfaService.acceptedStep(user, request.code(), now);
             if (step.isEmpty()) {
-                registerFailedAttempt(user, login, clientIp, false, now, "second-factor code");
-                auditLogService.logDenied(AuditEntity.AUTH, login, AuditAction.LOGIN, login, user.getCompanyId(),
-                        "Login refused: wrong second-factor code");
-                throw new BusinessException(INVALID_CODE);
+                throw refusedCode(user, clientIp, now, "Login refused: wrong second-factor code");
             }
-            if (!mfaService.consumeChallenge(challenge.getId(), now)) {
-                log.warn("Second-factor code of user ID {} accepted, but its sign-in step is already used or expired",
-                        user.getId());
-                throw new UnauthorizedException(INVALID_SIGN_IN_STEP);
-            }
+            consumeStep(challenge, user, now);
 
             user.setMfaLastStep(step.getAsLong());
             boolean enrolled = user.getMfaEnabledAt() == null;
@@ -226,8 +231,105 @@ public class AuthService {
                 log.info("User ID {} set up the second factor", user.getId());
             }
             clearFailures(user, clientIp, login);
-            return startSession(user, now, true);
+            LoginResponse response = startSession(user, now, "second factor verified");
+            // Резервные коды — вместе с подключением, один раз (Р-142).
+            return enrolled ? response.withBackupCodes(mfaService.issueBackupCodes(user.getId(), now)) : response;
         }
+    }
+
+    // Вход резервным кодом (Р-142): код гаснет, неверный — та же неудача, что неверный код из приложения.
+    private LoginResponse verifyBackupCode(User user, MfaChallenge challenge, String code, String clientIp, Instant now) {
+        Optional<UUID> backupCode = user.getMfaEnabledAt() == null
+                ? Optional.empty()
+                : mfaService.matchingBackupCode(user.getId(), code);
+        if (backupCode.isEmpty()) {
+            throw refusedCode(user, clientIp, now, "Login refused: wrong backup code");
+        }
+        consumeStep(challenge, user, now);
+        if (!mfaService.useBackupCode(backupCode.get(), now)) {
+            log.warn("Backup code of user ID {} was used by a concurrent sign-in", user.getId());
+            throw new UnauthorizedException(INVALID_SIGN_IN_STEP);
+        }
+        clearFailures(user, clientIp, user.getUsername());
+        long left = mfaService.backupCodesLeft(user.getId());
+        log.info("User ID {} signed in with a backup code; {} left", user.getId(), left);
+        return startSession(user, now, "second factor verified with a backup code, " + left + " left")
+                .withBackupCodesLeft(left);
+    }
+
+    private static boolean isTotpCode(String code) {
+        return code != null && code.length() == 6 && code.chars().allMatch(c -> c >= '0' && c <= '9');
+    }
+
+    // Неверный код — неудача входа в общем счётчике и лимите адреса (Р-141); отказ всегда один и тот же.
+    private BusinessException refusedCode(User user, String clientIp, Instant now, String details) {
+        registerFailedAttempt(user, user.getUsername(), clientIp, false, now, "second-factor code");
+        auditLogService.logDenied(AuditEntity.AUTH, user.getUsername(), AuditAction.LOGIN, user.getUsername(),
+                user.getCompanyId(), details);
+        return new BusinessException(INVALID_CODE);
+    }
+
+    private void consumeStep(MfaChallenge challenge, User user, Instant now) {
+        if (!mfaService.consumeChallenge(challenge.getId(), now)) {
+            log.warn("Second-factor code of user ID {} accepted, but its sign-in step is already used or expired",
+                    user.getId());
+            throw new UnauthorizedException(INVALID_SIGN_IN_STEP);
+        }
+    }
+
+    // Второй фактор вошедшего пользователя — для «Настроек» (Р-142).
+    @Transactional(readOnly = true)
+    public MfaBackupCodesStatus backupCodesStatus(UserPrincipal principal) {
+        User user = currentUser(principal);
+        boolean enabled = user.getMfaEnabledAt() != null;
+        return new MfaBackupCodesStatus(enabled, enabled ? mfaService.backupCodesLeft(user.getId()) : 0);
+    }
+
+    // Новый набор резервных кодов (Р-142) — только по свежему коду из приложения: коды получает тот, у кого
+    // телефон, а не тот, кто завладел сессией. Неверный код — неудача входа, как на шаге входа (Р-141).
+    @Transactional(noRollbackFor = BusinessException.class)
+    public MfaBackupCodesResponse regenerateBackupCodes(MfaCodeRequest request, UserPrincipal principal, String clientIp) {
+        requireMfaEnabled();
+        Instant now = Instant.now();
+        String login = currentUser(principal).getUsername();
+        try (LoginRateLimiter.Attempt ignored = rateLimiter.begin(clientIp, login)) {
+            User user = userRepository.findForLoginByUsername(login)
+                    .orElseThrow(() -> new InvalidStateException("Access denied"));
+            if (user.getMfaEnabledAt() == null) {
+                throw new BusinessException("The second factor is not set up");
+            }
+            if (user.getLockoutUntil() != null && user.getLockoutUntil().isAfter(now)) {
+                throw new BusinessException(ACCOUNT_LOCKED_PREFIX + tryAgainIn(user.getLockoutUntil(), now));
+            }
+            OptionalLong step = mfaService.acceptedStep(user, request.code(), now);
+            if (step.isEmpty()) {
+                registerFailedAttempt(user, login, clientIp, false, now, "second-factor code");
+                auditLogService.logDenied(AuditEntity.USER, user.getId().toString(), AuditAction.MFA_BACKUP_CODES,
+                        login, user.getCompanyId(), "New backup codes refused: wrong second-factor code");
+                throw new BusinessException(INVALID_CODE);
+            }
+            user.setMfaLastStep(step.getAsLong());
+            clearFailures(user, clientIp, login);
+            List<String> codes = mfaService.issueBackupCodes(user.getId(), now);
+            eventPublisher.publishEvent(AuditEvent.of(AuditEntity.USER, user.getId().toString(),
+                    AuditAction.MFA_BACKUP_CODES, login, user.getCompanyId(),
+                    "New backup codes issued to their owner; the previous ones are void"));
+            log.info("User ID {} issued new backup codes", user.getId());
+            return new MfaBackupCodesResponse(codes);
+        }
+    }
+
+    // Вошедший пользователь — по userId токена; учётка не ACTIVE — 403, как у прочих действий над собой.
+    private User currentUser(UserPrincipal principal) {
+        UUID userId;
+        try {
+            userId = UUID.fromString(String.valueOf(UserPrincipal.getUserId(principal)));
+        } catch (IllegalArgumentException e) {
+            throw new InvalidStateException("Access denied");
+        }
+        return userRepository.findById(userId)
+                .filter(user -> STATUS_ACTIVE.equals(user.getStatus()))
+                .orElseThrow(() -> new InvalidStateException("Access denied"));
     }
 
     private void requireMfaEnabled() {
@@ -310,7 +412,8 @@ public class AuthService {
         rateLimiter.clearFailuresOf(clientIp, cleanEmail);
     }
 
-    private LoginResponse startSession(User user, Instant now, boolean secondFactor) {
+    // secondFactorNote — чем подтверждён второй фактор, в журнал входа; null — вход без него.
+    private LoginResponse startSession(User user, Instant now, String secondFactorNote) {
         // Вход — активность учётки: отсчёт 90 дней до автоблокировки начинается заново (Р-101).
         user.setLastActivityAt(now);
         userRepository.save(user);
@@ -320,7 +423,7 @@ public class AuthService {
         // успех и отказы одного аккаунта находит один фильтр (P3-2).
         eventPublisher.publishEvent(AuditEvent.of(AuditEntity.AUTH, user.getUsername(), AuditAction.LOGIN,
                 user.getUsername(), user.getCompanyId(), "Login successful, role " + user.getRole()
-                        + (secondFactor ? ", second factor verified" : "")));
+                        + (secondFactorNote != null ? ", " + secondFactorNote : "")));
         log.info("Login successful for user ID: {}, role: {}, companyId: {}",
                 user.getId(), user.getRole(), user.getCompanyId());
         return response;
@@ -520,6 +623,8 @@ public class AuthService {
                 false,
                 false,
                 false,
+                null,
+                null,
                 null
         );
     }

@@ -1834,12 +1834,14 @@ sudo -u postgres psql -d merchant_portal -c "UPDATE users SET status = 'ACTIVE',
 
 ### 20.3a. Единственный администратор потерял телефон
 
-Второй фактор сбрасывает другой администратор (Р-141), себе — никто. Если `SYSTEM_ADMIN` один, сбросьте фактор в
-базе, указав его логин; при следующем входе он подключит его заново:
+Сначала — резервный код, выданный при подключении (Р-142): с ним администратор войдёт сам. Второй фактор
+сбрасывает другой администратор (Р-141), себе — никто. Если `SYSTEM_ADMIN` один и кодов у него нет, сбросьте фактор
+в базе, указав его логин; при следующем входе он подключит его заново и получит новые коды:
 
 ```bash
 sudo -u postgres psql -d merchant_portal -c "UPDATE users SET mfa_secret = NULL, mfa_enabled_at = NULL, \
-  mfa_last_step = NULL WHERE username = 'admin@your-company.az';"
+  mfa_last_step = NULL WHERE username = 'admin@your-company.az'; DELETE FROM mfa_backup_codes WHERE user_id = \
+  (SELECT id FROM users WHERE username = 'admin@your-company.az');"
 ```
 
 Как и выше, журнал аудита этого не увидит — отметьте во внутреннем журнале работ. `AUTH_MFA_ENABLED=false` (§20.1)

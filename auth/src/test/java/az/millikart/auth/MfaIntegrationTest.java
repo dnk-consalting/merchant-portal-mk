@@ -1,9 +1,11 @@
 package az.millikart.auth;
 
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.nullValue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -17,6 +19,7 @@ import az.millikart.auth.domain.Company;
 import az.millikart.auth.domain.User;
 import az.millikart.auth.dto.ChangePasswordRequest;
 import az.millikart.auth.dto.LoginRequest;
+import az.millikart.auth.dto.MfaCodeRequest;
 import az.millikart.auth.dto.MfaSetupRequest;
 import az.millikart.auth.dto.MfaVerifyRequest;
 import az.millikart.auth.dto.RefreshRequest;
@@ -31,6 +34,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -91,12 +95,19 @@ class MfaIntegrationTest {
     private String clientAddress;
 
     private record Enrolled(String secret, JsonNode session) {
+
+        List<String> backupCodes() {
+            List<String> codes = new ArrayList<>();
+            session.get("backupCodes").forEach(code -> codes.add(code.asText()));
+            return codes;
+        }
     }
 
     @BeforeEach
     void setUp() {
         clientAddress = "192.0.2." + NEXT_ADDRESS.getAndIncrement();
         jdbcTemplate.update("DELETE FROM mfa_challenges");
+        jdbcTemplate.update("DELETE FROM mfa_backup_codes");
         userRepository.deleteAll();
         companyRepository.deleteAll();
         auditLogs.deleteAll();
@@ -127,10 +138,15 @@ class MfaIntegrationTest {
         assertNull(user(MANAGER).getMfaEnabledAt(), "a secret is not set up until its first code is accepted");
         assertFalse(user(MANAGER).getMfaSecret().contains(secret), "the secret is stored encrypted");
 
-        verify(mfaToken, codeOf(secret)).andExpect(status().isOk())
+        JsonNode session = body(verify(mfaToken, codeOf(secret)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.token").isNotEmpty())
                 .andExpect(jsonPath("$.refreshToken").isNotEmpty())
-                .andExpect(jsonPath("$.mfaRequired", is(false)));
+                .andExpect(jsonPath("$.mfaRequired", is(false)))
+                .andExpect(jsonPath("$.backupCodes", hasSize(10))));
+        // Р-142: резервные коды выдаются вместе с подключением, один раз и только хэшами в базе.
+        session.get("backupCodes").forEach(code -> assertTrue(code.asText().matches("[2-9A-HJKMNP-Z]{4}-[2-9A-HJKMNP-Z]{4}"),
+                "XXXX-XXXX without look-alike characters: " + code));
+        assertEquals(10, backupCodeRows(MANAGER));
 
         assertNotNull(user(MANAGER).getMfaEnabledAt());
         assertEquals(1, records("USER", "MFA_ENROLL").size());
@@ -155,7 +171,8 @@ class MfaIntegrationTest {
         verify(mfaToken, codeAt(secret, enrolledAt)).andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message", is("Invalid code")));
         verify(mfaToken, codeAt(secret, enrolledAt + 1)).andExpect(status().isOk())
-                .andExpect(jsonPath("$.token").isNotEmpty());
+                .andExpect(jsonPath("$.token").isNotEmpty())
+                .andExpect(jsonPath("$.backupCodes", nullValue()));
         assertEquals(enrolledAt + 1, user(MANAGER).getMfaLastStep());
     }
 
@@ -289,12 +306,101 @@ class MfaIntegrationTest {
                 .anyMatch(r -> r.getDetails().contains("its own second factor")));
     }
 
+    // Р-142: потерян телефон — вход резервным кодом. Код входит один раз, как его ни набрать (регистр, дефис),
+    // и сообщает остаток; израсходованный и неверный — неудача входа, как неверный код из приложения.
+    @Test
+    void aBackupCode_signsInOnce_andTellsHowManyAreLeft() throws Exception {
+        List<String> codes = enroll(MANAGER).backupCodes();
+        String typedLoosely = codes.get(0).toLowerCase().replace("-", "");
+
+        verify(stepOf(MANAGER), typedLoosely).andExpect(status().isOk())
+                .andExpect(jsonPath("$.token").isNotEmpty())
+                .andExpect(jsonPath("$.backupCodesLeft", is(9)));
+        assertTrue(records("AUTH", "LOGIN").stream()
+                .anyMatch(r -> r.getOutcome() == AuditOutcome.SUCCESS && r.getDetails().contains("backup code, 9 left")));
+
+        String step = stepOf(MANAGER);
+        verify(step, codes.get(0)).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message", is("Invalid code")));
+        verify(step, "ABCD-EFGH").andExpect(status().isBadRequest());
+        assertEquals(2, user(MANAGER).getFailedLoginAttempts(), "a used or wrong backup code is a failed sign-in");
+        assertEquals(2, records("AUTH", "LOGIN").stream()
+                .filter(r -> "Login refused: wrong backup code".equals(r.getDetails())).count());
+
+        verify(step, codes.get(1)).andExpect(status().isOk()).andExpect(jsonPath("$.backupCodesLeft", is(8)));
+        assertEquals(0, user(MANAGER).getFailedLoginAttempts());
+    }
+
+    // Новый набор — только по свежему коду из приложения: завладевший сессией без телефона кодов не получит.
+    // Старый набор гаснет целиком; неверный код считается неудачей входа.
+    @Test
+    void newBackupCodes_needACodeFromTheApp_andVoidTheOldOnes() throws Exception {
+        Enrolled enrolled = enroll(MANAGER);
+        String oldCode = enrolled.backupCodes().get(0);
+        mockMvc.perform(get("/api/v1/users/me/mfa-backup-codes").header(HttpHeaders.AUTHORIZATION, tokenOf(MANAGER)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.mfaEnabled", is(true)))
+                .andExpect(jsonPath("$.remaining", is(10)));
+
+        regenerate(MANAGER, oldCode).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message", is("Code must be 6 digits")));
+        regenerate(MANAGER, wrongCodeFor(enrolled.secret())).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message", is("Invalid code")));
+        assertEquals(1, user(MANAGER).getFailedLoginAttempts());
+        assertEquals(1, records("USER", "MFA_BACKUP_CODES").stream()
+                .filter(r -> r.getOutcome() == AuditOutcome.DENIED).count());
+
+        JsonNode fresh = body(regenerate(MANAGER, nextCodeOf(enrolled.secret())).andExpect(status().isOk())
+                .andExpect(jsonPath("$.codes", hasSize(10))));
+        assertEquals(0, user(MANAGER).getFailedLoginAttempts());
+        assertEquals(10, backupCodeRows(MANAGER), "the old set is deleted, not kept alongside");
+
+        verify(stepOf(MANAGER), oldCode).andExpect(status().isBadRequest());
+        verify(stepOf(MANAGER), fresh.get("codes").get(0).asText()).andExpect(status().isOk());
+        assertEquals(1, records("USER", "MFA_BACKUP_CODES").stream()
+                .filter(r -> r.getOutcome() == AuditOutcome.SUCCESS).count());
+    }
+
+    // Без подключённого фактора кодов нет; сброс фактора гасит и их — новый набор даст повторное подключение.
+    @Test
+    void backupCodes_belongToASetUpFactor_andAResetVoidsThem() throws Exception {
+        mockMvc.perform(get("/api/v1/users/me/mfa-backup-codes").header(HttpHeaders.AUTHORIZATION, tokenOf(MANAGER)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.mfaEnabled", is(false)))
+                .andExpect(jsonPath("$.remaining", is(0)));
+        regenerate(MANAGER, "123456").andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message", is("The second factor is not set up")));
+
+        String code = enroll(MANAGER).backupCodes().get(0);
+        resetBy(ADMIN, user(MANAGER).getId()).andExpect(status().isOk());
+        assertEquals(0, backupCodeRows(MANAGER));
+
+        // После сброса фактор подключают заново — резервный код старого фактора шаг входа не завершит.
+        verify(stepOf(MANAGER), code).andExpect(status().isBadRequest());
+    }
+
     // Вход с подключением фактора до конца: секрет — для следующих кодов, сессия — для её отзыва.
     private Enrolled enroll(String username) throws Exception {
         String mfaToken = body(login(username, PASSWORD)).get("mfaToken").asText();
         String secret = body(setup(mfaToken).andExpect(status().isOk())).get("secret").asText();
         JsonNode session = body(verify(mfaToken, codeOf(secret)).andExpect(status().isOk()));
         return new Enrolled(secret, session);
+    }
+
+    private String stepOf(String username) throws Exception {
+        return body(login(username, PASSWORD).andExpect(status().isOk())).get("mfaToken").asText();
+    }
+
+    private ResultActions regenerate(String username, String code) throws Exception {
+        return mockMvc.perform(fromClient(post("/api/v1/users/me/mfa-backup-codes"))
+                .header(HttpHeaders.AUTHORIZATION, tokenOf(username))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(new MfaCodeRequest(code))));
+    }
+
+    private int backupCodeRows(String username) {
+        return jdbcTemplate.queryForObject("SELECT COUNT(*) FROM mfa_backup_codes WHERE user_id = ?", Integer.class,
+                user(username).getId());
     }
 
     private void saveUser(String username, String role, String companyId) {

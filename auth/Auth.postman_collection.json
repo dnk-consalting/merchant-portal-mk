@@ -189,7 +189,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n  \"mfaToken\": \"{{mfaToken}}\",\n  \"code\": \"<6 digits from the authenticator app>\"\n}",
+							"raw": "{\n  \"mfaToken\": \"{{mfaToken}}\",\n  \"code\": \"<6 digits from the authenticator app, or a backup code XXXX-XXXX>\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -209,7 +209,7 @@
 								"verify"
 							]
 						},
-						"description": "Finishes the sign-in with the second-factor code (Р-141): returns the same body as Login with tokens. The first accepted code completes the set-up. A code is accepted once only (PCI DSS 8.5.1); a wrong code is 400 \"Invalid code\" and counts as a failed sign-in attempt, together with wrong passwords (6 in a row lock the account for 30 minutes)."
+						"description": "Finishes the sign-in with the second-factor code (Р-141): returns the same body as Login with tokens. The first accepted code completes the set-up. A code is accepted once only (PCI DSS 8.5.1); a wrong code is 400 \"Invalid code\" and counts as a failed sign-in attempt, together with wrong passwords (6 in a row lock the account for 30 minutes). The code may also be a backup code XXXX-XXXX (Р-142): it works once, and the answer carries backupCodesLeft. The code that completes the set-up returns backupCodes — the 10 backup codes, shown only this once."
 					},
 					"response": []
 				},
@@ -532,6 +532,73 @@
 							]
 						},
 						"description": "Resets the second factor of a user who lost the phone (Р-141): the secret is erased, every session of the user ends, and the factor is set up again at the next sign-in. Same access rules as Update User; nobody resets their own — 403 \"Cannot reset your own second factor\". Returns the user with mfaEnabled=false."
+					},
+					"response": []
+				},
+				{
+					"name": "Backup Codes Status",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{authToken}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/users/me/mfa-backup-codes",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"users",
+								"me",
+								"mfa-backup-codes"
+							]
+						},
+						"description": "Second factor of the signed-in user (Р-142): whether it is set up and how many backup codes are left."
+					},
+					"response": []
+				},
+				{
+					"name": "New Backup Codes",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{authToken}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"code\": \"<6 digits from the authenticator app>\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/users/me/mfa-backup-codes",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"users",
+								"me",
+								"mfa-backup-codes"
+							]
+						},
+						"description": "Issues a new set of 10 backup codes to the signed-in user and voids the previous ones (Р-142). Needs a fresh code from the authenticator app, not a backup code; a wrong code is 400 \"Invalid code\" and counts as a failed sign-in attempt."
 					},
 					"response": []
 				},
