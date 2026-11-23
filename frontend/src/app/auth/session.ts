@@ -31,6 +31,10 @@ export interface LoginResponse {
   /** Второй фактор ещё не подключён: сначала `/mfa/setup`. */
   mfaSetupRequired?: boolean;
   mfaToken?: string | null;
+  /** Резервные коды — только в ответе кода, подтвердившего подключение (Р-142). */
+  backupCodes?: string[] | null;
+  /** Сколько резервных кодов осталось — только после входа резервным кодом. */
+  backupCodesLeft?: number | null;
 }
 
 export type AuthErrorCode =

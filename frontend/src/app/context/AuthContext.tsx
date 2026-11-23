@@ -33,6 +33,17 @@ export interface MfaStep {
   setupRequired: boolean;
 }
 
+/**
+ * Принятый код второго фактора. Сессия начинается только `complete()`: до него форма входа показывает резервные
+ * коды или их остаток (Р-142) — начатая сразу сессия увела бы со страницы входа (`PublicOnlyRoute`).
+ */
+export interface MfaVerification {
+  backupCodes: string[] | null;
+  backupCodesLeft: number | null;
+  /** Может бросить `AuthError`, как вход: ответ проверяется при начале сессии. */
+  complete: () => void;
+}
+
 /** Секрет для приложения-аутентификатора — только на время подключения, никуда не сохраняется. */
 export interface MfaSetup {
   secret: string;
@@ -51,8 +62,8 @@ interface AuthContextType {
   /** Смена пароля по текущему и вход с новым (Р-100) — так же, через второй фактор. */
   changePassword: (email: string, currentPassword: string, newPassword: string) => Promise<MfaStep | null>;
   setupMfa: (mfaToken: string) => Promise<MfaSetup>;
-  /** Принятый код начинает сессию. */
-  verifyMfa: (mfaToken: string, code: string, email: string) => Promise<void>;
+  /** Код из приложения или резервный; сессию начинает `complete()` результата. */
+  verifyMfa: (mfaToken: string, code: string, email: string) => Promise<MfaVerification>;
   logout: () => Promise<void>;
 }
 
@@ -164,7 +175,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const verifyMfa = useCallback(async (mfaToken: string, code: string, email: string) => {
     const response = await apiClient.post<LoginResponse>(MFA_VERIFY_PATH, { mfaToken, code });
-    startSession(response, email);
+    const { backupCodes, backupCodesLeft } = response.data ?? {};
+    return {
+      backupCodes: Array.isArray(backupCodes) && backupCodes.every(c => typeof c === 'string') ? backupCodes : null,
+      backupCodesLeft: typeof backupCodesLeft === 'number' ? backupCodesLeft : null,
+      complete: () => startSession(response, email),
+    };
   }, [startSession]);
 
   const logout = useCallback(async () => {

@@ -18,5 +18,6 @@
     <include file="changes/012-refresh-session-start.xml" relativeToChangelogFile="true"/>
     <include file="changes/013-user-mfa.xml" relativeToChangelogFile="true"/>
     <include file="changes/014-mfa-challenges.xml" relativeToChangelogFile="true"/>
+    <include file="changes/015-mfa-backup-codes.xml" relativeToChangelogFile="true"/>
 
 </databaseChangeLog>

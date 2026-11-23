@@ -96,6 +96,10 @@ public class MigrationOrderTest {
         assertTrue(tableExists("mfa_challenges"), "14-auth must run too");
         assertTrue(indexExists("mfa_challenges", "idx_mfa_challenges_user"));
         assertTrue(foreignKeyExists("mfa_challenges", "fk_mfa_challenges_user"));
+        // Р-142: резервные коды второго фактора.
+        assertTrue(tableExists("mfa_backup_codes"), "15-auth must run too");
+        assertTrue(indexExists("mfa_backup_codes", "idx_mfa_backup_codes_user"));
+        assertTrue(foreignKeyExists("mfa_backup_codes", "fk_mfa_backup_codes_user"));
     }
 
     // Р-140: живой до миграции токен получает время входа из issued_at — без него NOT NULL уронил бы миграцию на
@@ -210,6 +214,10 @@ public class MigrationOrderTest {
         assertTrue(tableExists("mfa_challenges"));
         assertTrue(indexExists("mfa_challenges", "idx_mfa_challenges_user"));
         assertTrue(foreignKeyExists("mfa_challenges", "fk_mfa_challenges_user"));
+        // 015 (Р-142): таблица, индекс и FK — каждый под своим precondition.
+        assertTrue(tableExists("mfa_backup_codes"));
+        assertTrue(indexExists("mfa_backup_codes", "idx_mfa_backup_codes_user"));
+        assertTrue(foreignKeyExists("mfa_backup_codes", "fk_mfa_backup_codes_user"));
     }
 
     // Хелперы

@@ -1,8 +1,12 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
   Box,
   Button,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Divider,
   MenuItem,
   Paper,
@@ -17,8 +21,17 @@ import { useLanguage } from '../context/LanguageContext';
 import type { Language } from '../i18n/translations';
 import type { CompanyDto } from '../types/dto';
 import { useCompanyName } from '../hooks/useCompanyName';
+import { BackupCodesList } from '../components/BackupCodesList';
 
-// Живы только название компании и язык; выдуманные вкладки и настройки не возвращать (P3-6).
+const BACKUP_CODES_PATH = '/api/v1/users/me/mfa-backup-codes';
+
+interface BackupCodesStatus {
+  mfaEnabled: boolean;
+  remaining: number;
+}
+
+// Живы название компании, язык и резервные коды второго фактора (Р-142); выдуманные вкладки и настройки не
+// возвращать (P3-6).
 export const SettingsPage: React.FC = () => {
   const { user } = useAuth();
   const { language, setLanguage, tObj } = useLanguage();
@@ -66,6 +79,59 @@ export const SettingsPage: React.FC = () => {
       setSaveError(err.response?.data?.message || '');
     } finally {
       setSaving(false);
+    }
+  };
+
+  // Резервные коды (Р-142): остаток и новый набор по свежему коду из приложения. Коды — только в состоянии окна.
+  const [mfaStatus, setMfaStatus] = useState<BackupCodesStatus | null>(null);
+  const [mfaLoadFailed, setMfaLoadFailed] = useState(false);
+  const [codesDialogOpen, setCodesDialogOpen] = useState(false);
+  const [appCode, setAppCode] = useState('');
+  const [newCodes, setNewCodes] = useState<string[] | null>(null);
+  const [codesBusy, setCodesBusy] = useState(false);
+  const [codesError, setCodesError] = useState('');
+
+  const loadMfaStatus = useCallback(() => {
+    apiClient.get<BackupCodesStatus>(BACKUP_CODES_PATH)
+      .then(res => {
+        setMfaStatus({ mfaEnabled: res.data?.mfaEnabled === true, remaining: Number(res.data?.remaining) || 0 });
+        setMfaLoadFailed(false);
+      })
+      .catch(() => setMfaLoadFailed(true));
+  }, []);
+  useEffect(loadMfaStatus, [loadMfaStatus]);
+
+  const openCodesDialog = () => {
+    setAppCode('');
+    setNewCodes(null);
+    setCodesError('');
+    setCodesDialogOpen(true);
+  };
+
+  const closeCodesDialog = () => {
+    if (codesBusy) return;
+    setCodesDialogOpen(false);
+    setNewCodes(null);
+    loadMfaStatus();
+  };
+
+  const handleCreateCodes = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (codesBusy) return;
+    if (!/^\d{6}$/.test(appCode)) {
+      setCodesError(tObj.auth.mfaCodeFormat);
+      return;
+    }
+    setCodesBusy(true);
+    setCodesError('');
+    try {
+      const res = await apiClient.post<{ codes: string[] }>(BACKUP_CODES_PATH, { code: appCode });
+      setNewCodes(Array.isArray(res.data?.codes) ? res.data.codes : []);
+    } catch (err: any) {
+      setAppCode('');
+      setCodesError(err.response?.data?.message || tObj.settings.mfa.failed);
+    } finally {
+      setCodesBusy(false);
     }
   };
 
@@ -157,7 +223,68 @@ export const SettingsPage: React.FC = () => {
             <MenuItem value="ru">Русский</MenuItem>
           </TextField>
         </Box>
+
+        <Divider sx={{ my: 4 }} />
+
+        <Typography variant="h6" sx={{ fontWeight: 600, mb: 2 }}>
+          {tObj.settings.mfa.title}
+        </Typography>
+        {mfaLoadFailed && <Alert severity="warning">{tObj.common.loadFailed}</Alert>}
+        {mfaStatus !== null && !mfaStatus.mfaEnabled && (
+          <Typography variant="body2" color="text.secondary">{tObj.settings.mfa.notSetUp}</Typography>
+        )}
+        {mfaStatus !== null && mfaStatus.mfaEnabled && (
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 2, flexWrap: 'wrap' }}>
+            <Box>
+              <Typography variant="body2" color="text.secondary">{tObj.settings.mfa.hint}</Typography>
+              <Typography variant="body1" sx={{ mt: 1 }}>
+                {tObj.settings.mfa.remaining}: <strong>{mfaStatus.remaining} / 10</strong>
+              </Typography>
+              {mfaStatus.remaining <= 2 && (
+                <Alert severity="warning" sx={{ mt: 1 }}>{tObj.settings.mfa.lowWarning}</Alert>
+              )}
+            </Box>
+            <Button variant="outlined" onClick={openCodesDialog}>{tObj.settings.mfa.create}</Button>
+          </Box>
+        )}
       </Paper>
+
+      <Dialog open={codesDialogOpen} onClose={closeCodesDialog} maxWidth="xs" fullWidth>
+        <DialogTitle>{tObj.settings.mfa.dialogTitle}</DialogTitle>
+        {newCodes === null ? (
+          <form onSubmit={handleCreateCodes} noValidate>
+            <DialogContent>
+              <Typography variant="body2" sx={{ mb: 2 }}>{tObj.settings.mfa.dialogText}</Typography>
+              {codesError && <Alert severity="error" sx={{ mb: 2 }}>{codesError}</Alert>}
+              <TextField
+                fullWidth
+                autoFocus
+                label={tObj.auth.mfaCodeLabel}
+                name="one-time-code"
+                autoComplete="one-time-code"
+                value={appCode}
+                onChange={e => setAppCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                disabled={codesBusy}
+                inputProps={{ inputMode: 'numeric', pattern: '[0-9]*', maxLength: 6 }}
+              />
+            </DialogContent>
+            <DialogActions>
+              <Button onClick={closeCodesDialog} disabled={codesBusy}>{tObj.common.cancel}</Button>
+              <Button type="submit" variant="contained" disabled={codesBusy}>{tObj.settings.mfa.create}</Button>
+            </DialogActions>
+          </form>
+        ) : (
+          <>
+            <DialogContent>
+              <Alert severity="warning" sx={{ mb: 2 }}>{tObj.settings.mfa.saveCodes}</Alert>
+              <BackupCodesList codes={newCodes} account={user?.email ?? ''} />
+            </DialogContent>
+            <DialogActions>
+              <Button variant="contained" onClick={closeCodesDialog}>{tObj.settings.mfa.done}</Button>
+            </DialogActions>
+          </>
+        )}
+      </Dialog>
     </Box>
   );
 };

@@ -6,6 +6,7 @@ export const AUDIT_ACTIONS = [
   'CREATE', 'READ', 'UPDATE', 'DELETE', 'LIST', 'BLOCK', 'UNBLOCK', 'LOGIN', 'LOGOUT', 'LOCKOUT',
   'RATE_LIMIT', 'TOKEN_REUSE', 'PASSWORD_CHANGE', 'CAPTURE', 'REFUND', 'CANCEL', 'RESOLVE', 'STATUS_CHANGE',
   'START', 'STOP', 'EXPORT', 'VERIFY', 'MFA_ENROLL', 'MFA_RESET',
+  'MFA_BACKUP_CODES',
 ] as const;
 
 export type AuditActionCode = (typeof AUDIT_ACTIONS)[number];

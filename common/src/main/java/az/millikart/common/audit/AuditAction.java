@@ -38,11 +38,14 @@ public final class AuditAction {
     // Второй фактор входа (PCI DSS 8.4.2, Р-141): подключён владельцем при входе, сброшен администратором.
     public static final String MFA_ENROLL = "MFA_ENROLL";
     public static final String MFA_RESET = "MFA_RESET";
+    // Новый набор резервных кодов второго фактора, выданный владельцу (Р-142).
+    public static final String MFA_BACKUP_CODES = "MFA_BACKUP_CODES";
 
     private static final Set<String> KNOWN = Set.of(
             CREATE, READ, UPDATE, DELETE, LIST, BLOCK, UNBLOCK,
             LOGIN, LOGOUT, LOCKOUT, RATE_LIMIT, TOKEN_REUSE, PASSWORD_CHANGE,
-            CAPTURE, REFUND, CANCEL, RESOLVE, STATUS_CHANGE, START, STOP, EXPORT, VERIFY, MFA_ENROLL, MFA_RESET);
+            CAPTURE, REFUND, CANCEL, RESOLVE, STATUS_CHANGE, START, STOP, EXPORT, VERIFY, MFA_ENROLL, MFA_RESET,
+            MFA_BACKUP_CODES);
 
     private AuditAction() {
     }

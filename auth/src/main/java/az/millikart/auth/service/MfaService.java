@@ -1,8 +1,11 @@
 package az.millikart.auth.service;
 
+import az.millikart.auth.domain.MfaBackupCode;
 import az.millikart.auth.domain.MfaChallenge;
 import az.millikart.auth.domain.User;
+import az.millikart.auth.repository.MfaBackupCodeRepository;
 import az.millikart.auth.repository.MfaChallengeRepository;
+import az.millikart.auth.security.BackupCodes;
 import az.millikart.auth.security.Totp;
 import az.millikart.common.security.CredentialCipher;
 import java.net.URLEncoder;
@@ -10,7 +13,9 @@ import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.List;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.UUID;
@@ -18,6 +23,7 @@ import lombok.Getter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -47,13 +53,17 @@ public class MfaService {
     private final String issuer;
     private final CredentialCipher cipher;
     private final MfaChallengeRepository challenges;
+    private final MfaBackupCodeRepository backupCodes;
+    private final PasswordEncoder passwordEncoder;
     private final SecureRandom random = new SecureRandom();
 
     public MfaService(@Value("${auth.mfa.enabled}") boolean enabled,
                       @Value("${auth.mfa.challenge-ttl}") Duration challengeTtl,
                       @Value("${auth.mfa.issuer}") String issuer,
                       @Value("${auth.mfa.encryption-key}") String encryptionKey,
-                      MfaChallengeRepository challenges) {
+                      MfaChallengeRepository challenges,
+                      MfaBackupCodeRepository backupCodes,
+                      PasswordEncoder passwordEncoder) {
         if (challengeTtl == null || challengeTtl.isZero() || challengeTtl.isNegative()) {
             throw new IllegalStateException("auth.mfa.challenge-ttl must be a positive duration, got " + challengeTtl);
         }
@@ -65,6 +75,8 @@ public class MfaService {
         this.issuer = issuer.strip();
         this.cipher = new CredentialCipher(encryptionKey, "Second-factor encryption key (MFA_ENCRYPTION_KEY)", HOW_TO_FIX);
         this.challenges = challenges;
+        this.backupCodes = backupCodes;
+        this.passwordEncoder = passwordEncoder;
         if (!enabled) {
             log.warn("Second factor at sign-in is DISABLED (auth.mfa.enabled=false) — a password alone opens a session");
         }
@@ -141,6 +153,49 @@ public class MfaService {
         }
         byte[] secret = Totp.fromBase32(cipher.decrypt(user.getMfaSecret()));
         return Totp.matchingStep(secret, code, Totp.stepAt(now), user.getMfaLastStep());
+    }
+
+    // Новый набор резервных кодов (Р-142): прежние гаснут. Коды возвращаются как есть один раз, в базе — BCrypt-хэши:
+    // у кода 40 бит, и быстрый хэш из дампа подбирался бы.
+    @Transactional
+    public List<String> issueBackupCodes(UUID userId, Instant now) {
+        backupCodes.deleteAllByUserId(userId);
+        List<String> codes = new ArrayList<>(BackupCodes.COUNT);
+        for (int i = 0; i < BackupCodes.COUNT; i++) {
+            String code = BackupCodes.generate(random);
+            codes.add(code);
+            backupCodes.save(MfaBackupCode.builder()
+                    .userId(userId)
+                    .codeHash(passwordEncoder.encode(BackupCodes.normalize(code)))
+                    .createdAt(now)
+                    .build());
+        }
+        return codes;
+    }
+
+    // Неизрасходованный код, которому равен ввод. BCrypt по каждому — до десяти сравнений: вход резервным кодом
+    // редкий, и медленная проверка здесь дешевле подбора кодов из дампа.
+    public Optional<UUID> matchingBackupCode(UUID userId, String input) {
+        String normalized = BackupCodes.normalize(input);
+        if (normalized == null) {
+            return Optional.empty();
+        }
+        for (MfaBackupCode code : backupCodes.findAllByUserIdAndUsedAtIsNull(userId)) {
+            if (passwordEncoder.matches(normalized, code.getCodeHash())) {
+                return Optional.of(code.getId());
+            }
+        }
+        return Optional.empty();
+    }
+
+    // false — код израсходован встречным входом: сессию по нему не выдавать.
+    @Transactional
+    public boolean useBackupCode(UUID codeId, Instant now) {
+        return backupCodes.markUsedIfUnused(codeId, now) == 1;
+    }
+
+    public long backupCodesLeft(UUID userId) {
+        return backupCodes.countByUserIdAndUsedAtIsNull(userId);
     }
 
     // Формат Key Uri приложений-аутентификаторов: метка «издатель:логин», издатель ещё и параметром.
