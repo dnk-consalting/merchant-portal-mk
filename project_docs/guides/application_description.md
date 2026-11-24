@@ -637,13 +637,16 @@ sequenceDiagram
     PBL-->>M: ссылка на /api/v1/payment-links/{id}/open
 
     C->>PBL: GET /api/v1/payment-links/{id}/open
+    PBL->>DB: ссылка, терминал, название компании (только чтение, Р-143)
+    PBL-->>C: страница ссылки: сумма, продавец, кнопка «Ödə · Pay»
+    C->>PBL: POST /api/v1/payment-links/{id}/open (кнопка)
     PBL->>DB: SELECT … FOR UPDATE NOWAIT по ссылке
     PBL->>DB: статус и срок ссылки, статус терминала, свободный слот
     PBL->>DB: креды компании и terminal_rid терминала
     PBL->>TXPG: POST /order?terminalRid=… (Basic компании, ridByMerchant, адрес возврата)
     TXPG-->>PBL: номер заказа, пароль заказа, hppUrl
     PBL->>DB: Transaction (PENDING)
-    PBL-->>C: 302 → платёжная страница шлюза
+    PBL-->>C: 303 → платёжная страница шлюза
 
     C->>TXPG: вводит карту и платит
     TXPG-->>C: redirect → /api/v1/payment-links/redirect/{ridByMerchant}

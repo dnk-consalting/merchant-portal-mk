@@ -2,24 +2,29 @@ package az.millikart.pbl.controller;
 
 import az.millikart.common.web.ClientIp;
 import az.millikart.common.web.TrustedProxies;
+import az.millikart.pbl.dto.PaymentPageView;
 import az.millikart.pbl.dto.PaymentReceiptView;
 import az.millikart.txpg.ProviderPayloads;
 import az.millikart.pbl.service.OpenLinkService;
 import az.millikart.pbl.service.PaymentLinkService;
 import java.net.URI;
+import java.util.Optional;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.OptimisticLockingFailureException;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 
 @Controller
 @RequestMapping("/api/v1/payment-links")
@@ -39,7 +44,22 @@ public class OpenLinkController {
         this.trustedProxies = trustedProxies;
     }
 
+    // Адрес ссылки запрашивают и боты превью Telegram и WhatsApp, и сканеры ссылок (Р-143): GET и HEAD только
+    // показывают страницу, заказ у эквайера заводит её кнопка — POST ниже. Нет ссылки или платить по ней
+    // нельзя — один ответ: страница не выдаёт, существует ли ссылка.
     @GetMapping("/{id}/open")
+    public String paymentPage(@PathVariable UUID id, Model model, HttpServletResponse response) {
+        Optional<PaymentPageView> page = openLinkService.paymentPage(id);
+        if (page.isEmpty()) {
+            response.setStatus(HttpServletResponse.SC_NOT_FOUND);
+        }
+        response.setHeader(HttpHeaders.CACHE_CONTROL, "no-store");
+        model.addAttribute("page", page.orElse(null));
+        return "pay";
+    }
+
+    // 303, а не 302: ответ на POST, браузер идёт на платёжную страницу GET-ом.
+    @PostMapping("/{id}/open")
     public ResponseEntity<Void> open(@PathVariable UUID id, HttpServletRequest request) {
         // Только ClientIp (P2-10): адрес ложится в transactions.client_ip, и выбирать его плательщику нельзя.
         String clientIp = ClientIp.resolve(request, trustedProxies.addresses());
@@ -47,7 +67,7 @@ public class OpenLinkController {
         String redirectUrl = openLinkService.openAndBuildRedirect(id, clientIp, userAgent);
         // P0-9: в query редиректа — пароль заказа, в лог только адрес.
         log.debug("Redirecting the payer to {}", ProviderPayloads.urlForLog(redirectUrl));
-        return ResponseEntity.status(HttpStatus.FOUND)
+        return ResponseEntity.status(HttpStatus.SEE_OTHER)
                 .location(URI.create(redirectUrl))
                 .build();
     }

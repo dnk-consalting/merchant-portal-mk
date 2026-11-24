@@ -345,7 +345,10 @@ origin через nginx. Обоснование — в комментариях 
 POST /api/v1/payment-links            → PaymentLink(status=ACTIVE), возвращается link
      expiresAt не передан → now + pbl.link.default-ttl (24 ч); передан → проверка
      «в будущем» и «не дальше pbl.link.max-ttl (90 д) от created_at», иначе 400 (P1-9)
-GET  /api/v1/payment-links/{id}/open  → (публично) OpenLinkService.openAndBuildRedirect
+GET  /api/v1/payment-links/{id}/open  → (публично) OpenLinkService.paymentPage → Thymeleaf pay.html
+     только чтение (Р-143): сумма, компания, назначение и кнопка «Ödə · Pay» — форма POST на тот же адрес;
+     ссылки нет или платить нельзя → 404 той же страницей. Заказа, попытки и смены статуса нет
+POST /api/v1/payment-links/{id}/open  → (публично, кнопка) OpenLinkService.openAndBuildRedirect
      ОДНА транзакция целиком (P1-5); отказ (400, 403, 409) её коммитит — найденное опросом остаётся (Р-113):
        1. findWithLockById(id)                [SELECT … FOR UPDATE NOWAIT на строке ссылки; занята → 409]
        2. терминал и статус/срок ссылки
@@ -358,7 +361,7 @@ GET  /api/v1/payment-links/{id}/open  → (публично) OpenLinkService.ope
        5. POST в TXPG /order?terminalRid=… → providerOrderId + password   [HTTP, блокировка удерживается]
        6. Transaction(status=PENDING); пароль — в provider_password, в provider_response
           его нет (P0-9: {hppUrl, id, status})
-     → 302 на hppUrl?id=…&password=…  (в лог — только адрес, ProviderPayloads.urlForLog)
+     → 303 на hppUrl?id=…&password=…  (в лог — только адрес, ProviderPayloads.urlForLog)
 плательщик платит на HPP
 GET  /api/v1/payment-links/redirect/{tx}  → refreshByRidByMerchant(tx) → Thymeleaf redirect.html
        {tx} — наш ridByMerchant (случайный UUID). Query-параметры провайдера ID/PASSWORD/STATUS
@@ -809,6 +812,15 @@ grep -rn "autoFocus" app/pages/*.tsx                                 # ниче�
   На нём только реквизиты закона (ст. 17.1) и правил ЦБ АР № 12/3 (п. 14.1, 15.5); собирает их только
   `PaymentReceipts`. Первых шести цифр карты, пароля заказа, IP и user agent плательщика там нет и не будет;
   строки без значения не выводятся, умолчаний нет (Р-48). Тексты — азербайджанский, под ним английский.
+- **GET адреса ссылки ничего не создаёт и не меняет** (Р-143). Его запрашивают боты превью Telegram и WhatsApp
+  и сканеры ссылок в почте; заказ у эквайера заводит только кнопка страницы — `POST` на тот же адрес. Ни заказа,
+  ни попытки, ни `EXPIRED`, ни записи журнала в `paymentPage` не добавлять, переход по ссылке «сразу на оплату»
+  не возвращать: бот снова займёт одноразовую ссылку на время жизни заказа. Данных клиента на странице нет:
+  адрес пересылают, а превью кэширует мессенджер. Стили, иконка и логотип — фрагменты `redirect.html`.
+- **Отказ по адресу ссылки браузеру — страницей, остальным — JSON** (Р-143). Страницу пишет
+  `PayerErrorPageConverter` из `ErrorResponse`, который уже собрали общие обработчики: свой
+  `@ExceptionHandler` в `OpenLinkController` не заводить — таблица «исключение → статус» и лог разошлись бы с
+  `GlobalExceptionHandler`. Конвертер стоит после Jackson: поставишь раньше — `*/*` Postman и тестов получит HTML.
 - **Асинхронного callback от TXPG нет и не будет** (Р-7). Статус дожимается страницей возврата
   (один заход), ручным `/status` и фоновой сверкой — эндпоинт не изобретать.
 - **Hibernate auto-flush.** Считаешь после изменения managed-сущности — она уже посчитана: flush

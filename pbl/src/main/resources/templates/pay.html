@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="az" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ödəniş · Payment</title>
+    <!--
+      Messenger previews read this page (Р-143). The card shows the merchant only: no amount, no description,
+      the preview is cached on the messenger's servers.
+    -->
+    <meta property="og:title"
+          th:content="${page != null and !#strings.isEmpty(page.merchantName) ? page.merchantName : 'Ödəniş · Payment'}">
+    <meta property="og:description" content="Ödəniş linki · Payment link">
+    <meta name="description" content="Ödəniş linki · Payment link">
+    <!-- The address is the only key to this link: never send it to the font host or anyone else. -->
+    <meta name="referrer" content="no-referrer">
+    <meta name="robots" content="noindex, nofollow">
+    <link th:replace="~{redirect :: icon}">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <style th:replace="~{redirect :: styles}"></style>
+    <style>
+        /* The shared styles push the amount to the right on wide screens - that is the receipt layout. */
+        .pay-card .receipt-amount-section {
+            text-align: center;
+            margin: 20px 0 24px;
+        }
+
+        .pay-card .brand {
+            margin-bottom: 24px;
+        }
+
+        .pay-details {
+            text-align: left;
+            border-top: 1px dashed var(--border-color);
+            padding-top: 16px;
+            margin-bottom: 8px;
+        }
+
+        .pay-form .btn {
+            width: 100%;
+            padding: 14px;
+            font-size: 15px;
+        }
+
+        .pay-form .btn:disabled {
+            opacity: 0.6;
+            cursor: progress;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .pay-note {
+            margin-top: 20px;
+        }
+
+        .pay-card > .btn {
+            width: 100%;
+        }
+    </style>
+</head>
+<body>
+
+<!--
+  Read-only page (Р-143): showing it creates no order and changes nothing. Only the button below - a POST to
+  this same address - starts the payment.
+-->
+<div class="container">
+
+    <div class="card pay-card" th:if="${page != null}">
+        <div th:replace="~{redirect :: brand}"></div>
+
+        <h1>Ödəniş linki</h1>
+        <div class="en-title">Payment link</div>
+
+        <div class="receipt-amount-section">
+            <div class="receipt-amount-label">Ödəniləcək məbləğ<span class="en">Amount to pay</span></div>
+            <div class="receipt-amount-val"
+                 th:text="${#numbers.formatDecimal(page.amount, 1, 'NONE', 2, 'POINT') + (page.currency != null ? ' ' + page.currency : '')}">0.00 AZN</div>
+        </div>
+
+        <div class="pay-details">
+            <div class="receipt-row" th:if="${!#strings.isEmpty(page.merchantName)}">
+                <div class="receipt-label">Satıcı<span class="en">Merchant</span></div>
+                <div class="receipt-value" th:text="${page.merchantName}">-</div>
+            </div>
+            <div class="receipt-row" th:if="${!#strings.isEmpty(page.description)}">
+                <div class="receipt-label">Təyinat<span class="en">Description</span></div>
+                <div class="receipt-value" th:text="${page.description}">-</div>
+            </div>
+        </div>
+
+        <!-- No action: the form posts to the address it was opened from. -->
+        <form class="pay-form" method="post">
+            <button class="btn btn-primary" type="submit">Ödə · Pay</button>
+        </form>
+
+        <p class="pay-note">Kart məlumatlarını bankın təhlükəsiz ödəniş səhifəsində daxil edəcəksiniz.</p>
+        <p class="en">You will enter your card details on the bank's secure payment page.</p>
+    </div>
+
+    <!--
+      The Pay button was refused (PayerErrorPageConverter): an earlier payment of this link is still open, or the
+      link is busy. "Back" is a GET of this same address - the link page again.
+    -->
+    <div class="card pay-card" th:if="${page == null and failure == 'BUSY'}">
+        <div th:replace="~{redirect :: brand}"></div>
+
+        <div class="status-icon-wrapper">
+            <div class="pulse-ring"></div>
+            <div class="status-icon">&#8987;</div>
+        </div>
+        <h1>Ödəniş artıq başlanıb</h1>
+        <div class="en-title">A payment has already been started</div>
+        <p>Bu link üzrə ödəniş səhifəsi artıq açılıb. Ödənişi həmin səhifədə tamamlayın və ya bir neçə dəqiqədən
+            sonra yenidən cəhd edin.</p>
+        <p class="en">The payment page for this link is already open. Complete the payment there, or try again in
+            a few minutes.</p>
+        <a class="btn btn-secondary" href="">Geri · Back</a>
+    </div>
+
+    <!-- The Pay button was refused by the acquirer, or something failed on our side - nothing was paid -->
+    <div class="card pay-card" th:if="${page == null and failure == 'FAILED'}">
+        <div th:replace="~{redirect :: brand}"></div>
+
+        <div class="status-icon-wrapper">
+            <div class="pulse-ring pulse-ring-error"></div>
+            <div class="status-icon">&#9888;</div>
+        </div>
+        <h1>Ödənişi başlatmaq mümkün olmadı</h1>
+        <div class="en-title">The payment could not be started</div>
+        <p>Bir az sonra yenidən cəhd edin. Problem təkrarlanarsa, satıcıya müraciət edin.</p>
+        <p class="en">Please try again a little later. If it happens again, contact the merchant.</p>
+        <a class="btn btn-secondary" href="">Geri · Back</a>
+    </div>
+
+    <!-- No such link or it cannot be paid now - one answer for both, the page does not tell which -->
+    <div class="card pay-card" th:if="${page == null and failure != 'BUSY' and failure != 'FAILED'}">
+        <div th:replace="~{redirect :: brand}"></div>
+
+        <div class="status-icon-wrapper">
+            <div class="pulse-ring"></div>
+            <div class="status-icon">&#128274;</div>
+        </div>
+        <h1>Ödəniş linki əlçatan deyil</h1>
+        <div class="en-title">This payment link is not available</div>
+        <p>Linkin müddəti bitib, o artıq istifadə olunub və ya satıcı onu dayandırıb. Yeni link üçün satıcıya
+            müraciət edin.</p>
+        <p class="en">The link has expired, has already been used, or the merchant has stopped it. Ask the
+            merchant for a new link.</p>
+    </div>
+
+</div>
+
+<script>
+    // One press - one order: the second POST would only get a refusal. Back from the bank page re-enables it.
+    (function () {
+        var form = document.querySelector('.pay-form');
+        if (!form) {
+            return;
+        }
+        var button = form.querySelector('button');
+        form.addEventListener('submit', function () {
+            button.disabled = true;
+        });
+        window.addEventListener('pageshow', function () {
+            button.disabled = false;
+        });
+    })();
+</script>
+
+</body>
+</html>
