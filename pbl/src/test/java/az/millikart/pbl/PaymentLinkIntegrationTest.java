@@ -14,6 +14,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.head;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -129,6 +130,9 @@ class PaymentLinkIntegrationTest {
 
     // Повторяет pbl.link.default-ttl тестового профиля, который повторяет продакшн.
     private static final Duration DEFAULT_TTL = Duration.ofHours(24);
+
+    // Accept, с которым браузер отправляет форму: text/html весом 1.0, всё прочее — 0.8 (Р-143).
+    private static final String BROWSER_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
 
     private String adminToken;
     private String headToken;
@@ -813,13 +817,68 @@ class PaymentLinkIntegrationTest {
         UUID id = createLinkAndGetId(headToken);
 
         // Публичный эндпоинт, авторизация не нужна.
-        String location = mockMvc.perform(get("/api/v1/payment-links/{id}/open", id))
-                .andExpect(status().isFound())
+        String location = mockMvc.perform(post("/api/v1/payment-links/{id}/open", id))
+                .andExpect(status().isSeeOther())
                 .andReturn().getResponse().getHeader("Location");
 
         Transaction attempt = transactionRepository.findAll().getFirst();
         Assertions.assertEquals("https://gateway.txpg.example.com/pay?id=" + attempt.getProviderOrderId()
                 + "&password=" + attempt.getProviderPassword(), location);
+    }
+
+    // Р-143: адрес ссылки запрашивают боты превью Telegram и WhatsApp. GET и HEAD только показывают страницу:
+    // заказ бота делал одноразовую ссылку «открытой», и плательщик получал 409 на время его жизни (Р-112).
+    // Что POST по той же ссылке заказ заводит, проверяет openPaymentLink_redirectsToProvider.
+    @Test
+    void paymentPage_forPreviewBots_createsNoOrderAndNoAttempt() throws Exception {
+        UUID id = createLinkAndGetId(headToken);
+
+        for (String userAgent : List.of("TelegramBot (like TwitterBot)", "WhatsApp/2.24.6.77 A")) {
+            mockMvc.perform(get("/api/v1/payment-links/{id}/open", id).header(HttpHeaders.USER_AGENT, userAgent))
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_HTML))
+                    .andExpect(content().string(containsString("1500.50 AZN")))
+                    .andExpect(content().string(containsString("method=\"post\"")));
+        }
+        mockMvc.perform(head("/api/v1/payment-links/{id}/open", id))
+                .andExpect(status().isOk());
+
+        verify(acquiringClient, never()).createEcomOrder(any(), any(), any(), any(), anyString());
+        Assertions.assertEquals(0, transactionRepository.count());
+    }
+
+    // Р-143: страница только читает. Просроченную ссылку она показывает недоступной, но EXPIRED ставит лишь
+    // кнопка (Р-113) — иначе статус и запись журнала делал бы бот превью.
+    @Test
+    void paymentPage_ofAnExpiredLink_isUnavailableAndChangesNothing() throws Exception {
+        PaymentLink link = linkFixture(UsageType.SINGLE, null, Instant.now().minus(Duration.ofHours(1)));
+
+        mockMvc.perform(get("/api/v1/payment-links/{id}/open", link.getId()))
+                .andExpect(status().isNotFound())
+                .andExpect(content().string(containsString("not available")))
+                .andExpect(content().string(not(containsString("method=\"post\""))));
+
+        Assertions.assertEquals(PaymentLinkStatus.ACTIVE,
+                paymentLinkRepository.findById(link.getId()).orElseThrow().getStatus());
+    }
+
+    // Р-143: страницу читают боты превью и любой, кому переслали адрес: данных клиента одноразовой ссылки на ней
+    // нет, сумма и назначение платежа — есть.
+    @Test
+    void paymentPage_showsTheAmountButNoCustomerData() throws Exception {
+        PaymentLink link = linkFixture(UsageType.SINGLE, null);
+        link.setCustomerName("Aysel Mammadova");
+        link.setCustomerEmail("aysel@example.az");
+        link.setCustomerPhone("+994501234567");
+        paymentLinkRepository.save(link);
+
+        mockMvc.perform(get("/api/v1/payment-links/{id}/open", link.getId()))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString("100.00 AZN")))
+                .andExpect(content().string(containsString("Reopen fixture")))
+                .andExpect(content().string(not(containsString("Aysel"))))
+                .andExpect(content().string(not(containsString("aysel@example.az"))))
+                .andExpect(content().string(not(containsString("501234567"))));
     }
 
     // DB-CONSTRAINT-500: User-Agent длиннее transactions.user_agent (512) ронял вставку попытки уже после
@@ -829,8 +888,8 @@ class PaymentLinkIntegrationTest {
         UUID id = createLinkAndGetId(headToken);
         String userAgent = "Mozilla/5.0 " + "x".repeat(600);
 
-        mockMvc.perform(get("/api/v1/payment-links/{id}/open", id).header(HttpHeaders.USER_AGENT, userAgent))
-                .andExpect(status().isFound());
+        mockMvc.perform(post("/api/v1/payment-links/{id}/open", id).header(HttpHeaders.USER_AGENT, userAgent))
+                .andExpect(status().isSeeOther());
 
         Transaction attempt = transactionRepository.findAll().getFirst();
         Assertions.assertEquals(userAgent.substring(0, 512), attempt.getUserAgent());
@@ -845,7 +904,7 @@ class PaymentLinkIntegrationTest {
                         io.github.resilience4j.circuitbreaker.CircuitBreaker.ofDefaults("acquiring")))
                 .when(acquiringClient).createEcomOrder(any(), any(), any(), any(), any());
 
-        mockMvc.perform(get("/api/v1/payment-links/{id}/open", id))
+        mockMvc.perform(post("/api/v1/payment-links/{id}/open", id))
                 .andExpect(status().isServiceUnavailable())
                 .andExpect(jsonPath("$.status", is(503)))
                 .andExpect(jsonPath("$.message", containsString("nothing was sent")));
@@ -869,8 +928,8 @@ class PaymentLinkIntegrationTest {
     void openPaymentLink_sendsTheCompanyCredentialsToTheProvider() throws Exception {
         UUID id = createLinkAndGetId(headToken);
 
-        mockMvc.perform(get("/api/v1/payment-links/{id}/open", id))
-                .andExpect(status().isFound());
+        mockMvc.perform(post("/api/v1/payment-links/{id}/open", id))
+                .andExpect(status().isSeeOther());
 
         verify(acquiringClient).createEcomOrder(any(),
                 eq(new ProviderCredentials(CompanyCredentialsFixture.loginOf("test-company"),
@@ -887,8 +946,8 @@ class PaymentLinkIntegrationTest {
     void openPaymentLink_storesThePasswordInItsOwnColumnOnly() throws Exception {
         UUID id = createLinkAndGetId(headToken);
 
-        mockMvc.perform(get("/api/v1/payment-links/{id}/open", id))
-                .andExpect(status().isFound());
+        mockMvc.perform(post("/api/v1/payment-links/{id}/open", id))
+                .andExpect(status().isSeeOther());
 
         Transaction pending = transactionRepository.findAll().getFirst();
         Assertions.assertFalse(pending.getProviderPassword() == null || pending.getProviderPassword().isBlank(),
@@ -915,8 +974,8 @@ class PaymentLinkIntegrationTest {
         Logger root = (Logger) LoggerFactory.getLogger(Logger.ROOT_LOGGER_NAME);
         root.addAppender(logEvents);
         try {
-            String location = mockMvc.perform(get("/api/v1/payment-links/{id}/open", id))
-                    .andExpect(status().isFound())
+            String location = mockMvc.perform(post("/api/v1/payment-links/{id}/open", id))
+                    .andExpect(status().isSeeOther())
                     .andReturn().getResponse().getHeader("Location");
 
             Transaction pending = transactionRepository.findAll().getFirst();
@@ -1023,8 +1082,8 @@ class PaymentLinkIntegrationTest {
     void completeDmsAndRefundFlow() throws Exception {
         UUID id = createLinkAndGetId(headToken);
 
-        mockMvc.perform(get("/api/v1/payment-links/{id}/open", id))
-                .andExpect(status().isFound());
+        mockMvc.perform(post("/api/v1/payment-links/{id}/open", id))
+                .andExpect(status().isSeeOther());
 
         List<Transaction> transactions = transactionRepository.findAll();
         Transaction pending = transactions.getFirst();
@@ -1078,8 +1137,8 @@ class PaymentLinkIntegrationTest {
                 .andReturn().getResponse().getContentAsString();
         UUID id = UUID.fromString(objectMapper.readTree(response).get("id").asText());
 
-        mockMvc.perform(get("/api/v1/payment-links/{id}/open", id))
-                .andExpect(status().isFound());
+        mockMvc.perform(post("/api/v1/payment-links/{id}/open", id))
+                .andExpect(status().isSeeOther());
 
         Transaction pending = transactionRepository.findAll().getFirst();
 
@@ -1501,8 +1560,8 @@ class PaymentLinkIntegrationTest {
         PaymentLink link = linkFixture(UsageType.MULTIPLE, 25);
         Transaction held = attemptFixture(link, TransactionStatus.AUTHORIZED);
 
-        mockMvc.perform(get("/api/v1/payment-links/{id}/open", link.getId()))
-                .andExpect(status().isFound());
+        mockMvc.perform(post("/api/v1/payment-links/{id}/open", link.getId()))
+                .andExpect(status().isSeeOther());
 
         Assertions.assertEquals(TransactionStatus.AUTHORIZED,
                 transactionRepository.findById(held.getId()).orElseThrow().getStatus());
@@ -1521,7 +1580,7 @@ class PaymentLinkIntegrationTest {
         doReturn(Map.of("id", 11338, "status", "Authorized"))
                 .when(acquiringClient).getOrderStatus(anyString(), anyString(), any());
 
-        mockMvc.perform(get("/api/v1/payment-links/{id}/open", link.getId()))
+        mockMvc.perform(post("/api/v1/payment-links/{id}/open", link.getId()))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.message", is("Payment link has an authorized payment awaiting capture")));
 
@@ -1540,8 +1599,8 @@ class PaymentLinkIntegrationTest {
         doReturn(Map.of("id", 11338, "status", "Preparing"))
                 .when(acquiringClient).getOrderStatus(anyString(), anyString(), any());
 
-        mockMvc.perform(get("/api/v1/payment-links/{id}/open", link.getId()))
-                .andExpect(status().isFound());
+        mockMvc.perform(post("/api/v1/payment-links/{id}/open", link.getId()))
+                .andExpect(status().isSeeOther());
 
         Assertions.assertEquals(TransactionStatus.PENDING,
                 transactionRepository.findById(abandoned.getId()).orElseThrow().getStatus());
@@ -1560,7 +1619,7 @@ class PaymentLinkIntegrationTest {
         doReturn(Map.of("id", 11338, "status", "Preparing"))
                 .when(acquiringClient).getOrderStatus(anyString(), anyString(), any());
 
-        mockMvc.perform(get("/api/v1/payment-links/{id}/open", link.getId()))
+        mockMvc.perform(post("/api/v1/payment-links/{id}/open", link.getId()))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.message", is(
                         "A payment session for this link is already open; complete it or try again in about 10 minutes")));
@@ -1570,6 +1629,52 @@ class PaymentLinkIntegrationTest {
                 .stream().map(Transaction::getId).toList());
         Assertions.assertEquals(TransactionStatus.PENDING,
                 transactionRepository.findById(live.getId()).orElseThrow().getStatus());
+    }
+
+    // Р-143: отказ кнопки оплаты браузер получает страницей, со статусом и решением общих обработчиков. Без Accept
+    // браузера — прежний JSON, его проверяет тест выше; текст отказа на страницу не попадает.
+    @Test
+    void reopen_singleUseWithALiveSession_fromTheBrowser_isRefusedWithAPage() throws Exception {
+        PaymentLink link = linkFixture(UsageType.SINGLE, null);
+        attemptFixture(link, TransactionStatus.PENDING);
+        doReturn(Map.of("id", 11338, "status", "Preparing"))
+                .when(acquiringClient).getOrderStatus(anyString(), anyString(), any());
+
+        mockMvc.perform(post("/api/v1/payment-links/{id}/open", link.getId()).header(HttpHeaders.ACCEPT, BROWSER_ACCEPT))
+                .andExpect(status().isConflict())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_HTML))
+                .andExpect(content().string(containsString("A payment has already been started")))
+                .andExpect(content().string(not(containsString("about 10 minutes"))));
+
+        verify(acquiringClient, never()).createEcomOrder(any(), any(), any(), any(), anyString());
+    }
+
+    // Р-143: просроченная ссылка и сбой у эквайера — свои страницы; 403 и 503 остаются статусами ответа.
+    @Test
+    void open_fromTheBrowser_refusalsAndFailuresArePages() throws Exception {
+        PaymentLink expired = linkFixture(UsageType.SINGLE, null, Instant.now().minus(Duration.ofHours(1)));
+        mockMvc.perform(post("/api/v1/payment-links/{id}/open", expired.getId()).header(HttpHeaders.ACCEPT, BROWSER_ACCEPT))
+                .andExpect(status().isForbidden())
+                .andExpect(content().string(containsString("This payment link is not available")));
+
+        PaymentLink live = linkFixture(UsageType.MULTIPLE, 5);
+        Mockito.doThrow(io.github.resilience4j.circuitbreaker.CallNotPermittedException.createCallNotPermittedException(
+                        io.github.resilience4j.circuitbreaker.CircuitBreaker.ofDefaults("acquiring")))
+                .when(acquiringClient).createEcomOrder(any(), any(), any(), any(), any());
+        mockMvc.perform(post("/api/v1/payment-links/{id}/open", live.getId()).header(HttpHeaders.ACCEPT, BROWSER_ACCEPT))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(content().string(containsString("The payment could not be started")))
+                .andExpect(content().string(not(containsString("nothing was sent"))));
+    }
+
+    // Р-143: страница отказа — только по адресу ссылки. Браузер с токеном на другом пути получает прежний JSON.
+    @Test
+    void errorPage_isOnlyForTheLinkAddress() throws Exception {
+        mockMvc.perform(get("/api/v1/transactions/not-a-uuid")
+                        .header(HttpHeaders.AUTHORIZATION, headToken)
+                        .header(HttpHeaders.ACCEPT, BROWSER_ACCEPT))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message", is("Parameter 'id' has an invalid value")));
     }
 
     // OPEN-DOUBLE-PAY: эквайера спрашивали только о последней попытке. Ранняя, оплаченная без возврата на
@@ -1586,7 +1691,7 @@ class PaymentLinkIntegrationTest {
                         : Map.of("id", 11339, "status", "Expired"))
                 .when(acquiringClient).getOrderStatus(anyString(), anyString(), any());
 
-        mockMvc.perform(get("/api/v1/payment-links/{id}/open", link.getId()))
+        mockMvc.perform(post("/api/v1/payment-links/{id}/open", link.getId()))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.message", is("Single-use payment link has already been used")));
 
@@ -1608,7 +1713,7 @@ class PaymentLinkIntegrationTest {
         Mockito.doThrow(new org.springframework.web.client.ResourceAccessException("Read timed out"))
                 .when(acquiringClient).getOrderStatus(anyString(), anyString(), any());
 
-        mockMvc.perform(get("/api/v1/payment-links/{id}/open", link.getId()))
+        mockMvc.perform(post("/api/v1/payment-links/{id}/open", link.getId()))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.message", is(
                         "The previous payment session for this link could not be checked; try again in a minute")));
@@ -1626,8 +1731,8 @@ class PaymentLinkIntegrationTest {
         Mockito.doThrow(new org.springframework.web.client.ResourceAccessException("Read timed out"))
                 .when(acquiringClient).getOrderStatus(anyString(), anyString(), any());
 
-        mockMvc.perform(get("/api/v1/payment-links/{id}/open", link.getId()))
-                .andExpect(status().isFound());
+        mockMvc.perform(post("/api/v1/payment-links/{id}/open", link.getId()))
+                .andExpect(status().isSeeOther());
 
         Assertions.assertEquals(2, transactionRepository.findByLinkIdOrderByCreatedAtDesc(link.getId()).size());
     }
@@ -1642,7 +1747,7 @@ class PaymentLinkIntegrationTest {
         doReturn(Map.of("id", 11338, "status", "FullyPaid"))
                 .when(acquiringClient).getOrderStatus(anyString(), anyString(), any());
 
-        mockMvc.perform(get("/api/v1/payment-links/{id}/open", link.getId()))
+        mockMvc.perform(post("/api/v1/payment-links/{id}/open", link.getId()))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.message", is("Single-use payment link has already been used")));
 
@@ -1663,8 +1768,8 @@ class PaymentLinkIntegrationTest {
                 "trans", List.of(Map.of("clearAmount", 0, "billingStatus", "Normal"))))
                 .when(acquiringClient).getOrderStatus(anyString(), anyString(), any());
 
-        mockMvc.perform(get("/api/v1/payment-links/{id}/open", link.getId()))
-                .andExpect(status().isFound());
+        mockMvc.perform(post("/api/v1/payment-links/{id}/open", link.getId()))
+                .andExpect(status().isSeeOther());
 
         Assertions.assertEquals(TransactionStatus.FAILED,
                 transactionRepository.findById(held.getId()).orElseThrow().getStatus());
@@ -1678,7 +1783,7 @@ class PaymentLinkIntegrationTest {
         doReturn(Map.of("id", 11338, "status", "Authorized"))
                 .when(acquiringClient).getOrderStatus(anyString(), anyString(), any());
 
-        mockMvc.perform(get("/api/v1/payment-links/{id}/open", link.getId()))
+        mockMvc.perform(post("/api/v1/payment-links/{id}/open", link.getId()))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.message", is("Payment link has an authorized payment awaiting capture")));
 
@@ -1842,7 +1947,7 @@ class PaymentLinkIntegrationTest {
     void expiredLink_cannotBeOpened() throws Exception {
         PaymentLink link = linkFixture(UsageType.SINGLE, null, Instant.now().minus(Duration.ofMinutes(1)));
 
-        mockMvc.perform(get("/api/v1/payment-links/{id}/open", link.getId()))
+        mockMvc.perform(post("/api/v1/payment-links/{id}/open", link.getId()))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.message", is("Payment link has expired")));
 
@@ -1991,8 +2096,8 @@ class PaymentLinkIntegrationTest {
 
     // Открывает ссылку и один раз опрашивает статус; стаб провайдера отвечает FullyPaid.
     private void settleOnePaymentThroughProvider(UUID linkId) throws Exception {
-        mockMvc.perform(get("/api/v1/payment-links/{id}/open", linkId))
-                .andExpect(status().isFound());
+        mockMvc.perform(post("/api/v1/payment-links/{id}/open", linkId))
+                .andExpect(status().isSeeOther());
 
         Transaction attempt = transactionRepository.findByLinkIdOrderByCreatedAtDesc(linkId).getFirst();
         mockMvc.perform(authed(get("/api/v1/transactions/{identifier}/status", attempt.getProviderOrderId()), headToken))

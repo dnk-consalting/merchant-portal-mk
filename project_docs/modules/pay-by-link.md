@@ -31,7 +31,7 @@
 | 2 | `PATCH /api/v1/payment-links/{id}` — update a link | JWT | §5.2 |
 | 3 | `GET /api/v1/payment-links/{id}` — one link | JWT | §5.3 |
 | 4 | `GET /api/v1/payment-links` — list of links | JWT | §5.4 |
-| 5 | `GET /api/v1/payment-links/{id}/open` — the payer opens a link | public | §5.5 |
+| 5 | `GET /api/v1/payment-links/{id}/open` — the payment page; `POST` — its Pay button | public | §5.5 |
 | 6 | `GET /api/v1/payment-links/redirect/{tx}` — the payer's return page | public | §5.6 |
 | 7 | `GET /api/v1/transactions` — list of transactions | JWT | §5.7 |
 | 8 | `GET /api/v1/transactions/{identifier}/status` — poll the acquirer | JWT | §5.8 |
@@ -211,7 +211,8 @@ The ceiling is measured **from the link's own creation time**, on create and on 
 otherwise a chain of `PATCH`es would push the expiry forward forever (P1-9).
 
 An `ACTIVE` link whose expiry has passed is moved to `EXPIRED` by `PaymentLinkScheduler` every 5 minutes;
-opening it answers `403 Payment link has expired` whether or not the sweep has run yet.
+its page shows it as unavailable, and the Pay button answers `403 Payment link has expired`, whether or not the
+sweep has run yet.
 
 Configuration: `pbl.link.default-ttl` (`PBL_LINK_DEFAULT_TTL`, default `PT24H`) and `pbl.link.max-ttl`
 (`PBL_LINK_MAX_TTL`, default `P90D`), ISO-8601 durations; environment variables —
@@ -340,10 +341,24 @@ Configuration: `pbl.link.default-ttl` (`PBL_LINK_DEFAULT_TTL`, default `PT24H`) 
 
 ### 5.5. Open Payment Page
 
--   **Method:** `GET /api/v1/payment-links/{id}/open`
+-   **Method:** `GET /api/v1/payment-links/{id}/open` — the page; `POST` to the same address — the Pay button.
 -   **Access:** public, no token — this is the URL in `link` that the payer opens.
 
-The whole open is one database transaction:
+**`GET` (and `HEAD`) only reads** (Р-143). Messenger previews (Telegram, WhatsApp) and link scanners fetch
+the address before the payer does; a `GET` creates no acquirer order, no attempt and changes no status. It
+answers an HTML page, `Cache-Control: no-store`:
+
+-   `200` — the amount with currency, the company name and `description` of the link, and the Pay button: a
+    form posting to the same address. The customer of a single-use link is not shown. The preview card
+    (`og:title`) carries the company name only.
+-   `404` — one page for a link that does not exist and for one that cannot be paid now: not `ACTIVE`,
+    past `expiresAt`, its terminal blocked or missing. The page sets no status: an expired link becomes
+    `EXPIRED` only on `POST`.
+-   `400` JSON — `id` is not a UUID.
+
+The page is a hint: what can be paid is decided by the `POST` below.
+
+**`POST`** starts the payment. The whole open is one database transaction:
 
 1.  The link row is locked with `SELECT … FOR UPDATE NOWAIT` (Р-85). If an open, a capture, a refund, a
     status poll or an edit (§5.2) of the same link holds the lock, the answer is `409` at once.
@@ -385,11 +400,11 @@ what the open found (Р-113): the statuses the polls of steps 4–5 brought, a l
 or `COMPLETED` in step 5. An unexpected failure (`5xx`) rolls everything back; those attempts are settled
 later by the return page, `/status` or the reconciliation.
 
-**Responses** (in the order of the checks):
+**`POST` responses** (in the order of the checks):
 
 | HTTP | `message` | When |
 |:---|:---|:---|
-| 302 | — | `Location: <hppUrl>?id=<orderId>&password=<orderPassword>` |
+| 303 | — | `Location: <hppUrl>?id=<orderId>&password=<orderPassword>`; the browser opens it with `GET` |
 | 400 | `Parameter 'id' has an invalid value` | `id` is not a UUID |
 | 404 | `Payment link not found: <id>` | |
 | 409 | `The resource is being changed by another request, please retry` | the link lock is busy |
@@ -409,7 +424,12 @@ later by the return page, `/status` or the reconciliation.
 | 400 | `Failed to register order with provider` | an answer without an order |
 | 503 | §6 | the circuit breaker to the acquirer is open |
 
-Refusals are the JSON of §6, not an HTML page: the payer's browser shows the raw body.
+Refusals are the JSON of §6 — unless the client asks for `text/html` first, as a browser submitting the Pay
+form does (Р-143). Then the same status comes with the link page in one of three states, and the `message`
+is not shown: `409` — "a payment has already been started, complete it or try again in a few minutes";
+`403`, `404` — "this payment link is not available"; any other — "the payment could not be started, try again
+later". The status and the log are decided as for JSON; only the body differs. A client sending `*/*`
+(Postman, curl) gets JSON. Only this address answers HTML; every other path stays JSON.
 
 ### 5.6. Redirect Landing Page
 
@@ -798,7 +818,7 @@ decline (`400`) — with outcome `DECLINED` and the gateway's text (Р-134).
         currency, day or terminal with only refunds has a negative `netAmount`. Refunds confirmed before
         `mpRefunds` existed are not subtracted (`../../AGENTS.md` §10).
     -   `netAmount` = `paidAmount − refundedAmount`; `averagePaidAmount` = `paidAmount / paidCount`.
--   **Counts are attempts, not payments:** every opening of a link creates a transaction (§5.5), and an
+-   **Counts are attempts, not payments:** every press of a link's Pay button creates a transaction (§5.5), and an
     abandoned one ends `FAILED`. `transactionCount` — attempts created in the window; `paidCount` — in the
     three paid statuses; `failedCount` — `FAILED`; `pendingCount` — `PENDING` and `AUTHORIZED` together;
     `refundedCount` — attempts of the window that are now `REFUNDED` or `PARTIALLY_REFUNDED`.
@@ -812,8 +832,8 @@ decline (`400`) — with outcome `DECLINED` and the gateway's text (Р-134).
     type; every value is listed, zeros included.
 -   `linkFunnel` (Р-128) — the same links **created** in the window and how far each got, counting its
     attempts whenever they happened (a cohort: a recent window keeps growing as links get paid). Each link
-    counts once per step: `created`; `opened` — it has an attempt (only an opening that reached the provider
-    creates one; refused openings are not recorded); `paymentStarted` — an attempt with a card submitted
+    counts once per step: `created`; `opened` — it has an attempt (only a Pay press that reached the provider
+    creates one; refused presses and views of the page are not recorded, Р-143); `paymentStarted` — an attempt with a card submitted
     (`transactions.card_submitted`: the provider's order carried a record in `trans[]` — paid, declined or cut
     off at 3-D Secure) or with money taken; `paid` — an attempt in `SUCCESS`, `REFUNDED`,
     `PARTIALLY_REFUNDED` or `AUTHORIZED` (a hold: the payer has done their part).
@@ -949,10 +969,12 @@ sequenceDiagram
     S-->>M: 201 Created (id, link)
     M->>C: Shares the link (outside the portal)
     C->>S: GET /payment-links/{id}/open
+    S-->>C: Payment page (amount, merchant, Pay button) - nothing is created
+    C->>S: POST /payment-links/{id}/open (Pay)
     S->>S: Lock the link, check status, expiry and slots
     S->>P: POST /order?terminalRid=… (company credentials)
     P-->>S: Order created (id, password, hppUrl)
-    S-->>C: 302 Redirect to hppUrl
+    S-->>C: 303 Redirect to hppUrl
     C->>P: Enter card details and submit
     P-->>C: Redirect to /payment-links/redirect/{ridByMerchant}?ID=…&STATUS=… (parameters ignored)
     C->>S: GET /payment-links/redirect/{ridByMerchant}

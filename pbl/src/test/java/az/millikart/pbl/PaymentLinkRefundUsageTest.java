@@ -377,7 +377,7 @@ class PaymentLinkRefundUsageTest {
     }
 
     private ResultActions openLink(UUID id) throws Exception {
-        return mockMvc.perform(get("/api/v1/payment-links/{id}/open", id));
+        return mockMvc.perform(post("/api/v1/payment-links/{id}/open", id));
     }
 
     private JsonNode getLink(UUID id) throws Exception {
@@ -397,7 +397,7 @@ class PaymentLinkRefundUsageTest {
 
     // Открывает ссылку и закрывает свежую попытку опросом статуса с ответом FullyPaid.
     private void settleOnePaymentThroughProvider(UUID linkId) throws Exception {
-        openLink(linkId).andExpect(status().isFound());
+        openLink(linkId).andExpect(status().isSeeOther());
 
         Transaction attempt = transactionRepository.findByLinkIdOrderByCreatedAtDesc(linkId).getFirst();
         when(acquiringClient.getOrderStatus(anyString(), anyString(), any()))

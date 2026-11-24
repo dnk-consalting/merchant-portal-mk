@@ -197,7 +197,7 @@
 					"response": []
 				},
 				{
-					"name": "Open Payment Page (Customer Redirect)",
+					"name": "Open Payment Page (Customer)",
 					"request": {
 						"auth": {
 							"type": "noauth"
@@ -217,7 +217,32 @@
 								"open"
 							]
 						},
-						"description": "Payer-facing public endpoint (pay-by-link.md §5.5): no token. Validates the link, registers an order at the acquirer (POST /order?terminalRid=... with the company credentials) and answers 302 to the acquirer's payment page. To see the 302 in Postman, turn off automatic redirect following in the request settings.\n\nThe link row is locked with NOWAIT, so a concurrent open, capture or refund of the same link gets 409 at once. The previous PENDING attempt is checked at the acquirer first. A link that is already paid, or held by an AUTHORIZED payment awaiting capture, gets 403; so do blocked, expired, canceled and completed links. Each successful open creates a PENDING transaction - run Get Payment Link Transactions afterwards to pick it up."
+						"description": "Payer-facing public endpoint (pay-by-link.md §5.5): no token. This is the address in `link`. Answers an HTML page with the amount, the company and the Pay button, or 404 with one page when the link does not exist or cannot be paid now. Read-only (Р-143): no acquirer order, no transaction, no status change - messenger previews and link scanners fetch this address. The payment is started by Pay Payment Link (Customer Button)."
+					},
+					"response": []
+				},
+				{
+					"name": "Pay Payment Link (Customer Button)",
+					"request": {
+						"auth": {
+							"type": "noauth"
+						},
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/payment-links/{{linkId}}/open",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"payment-links",
+								"{{linkId}}",
+								"open"
+							]
+						},
+						"description": "What the Pay button of the payment page sends (pay-by-link.md §5.5): no token, no body. Validates the link, registers an order at the acquirer (POST /order?terminalRid=... with the company credentials) and answers 303 to the acquirer's payment page. To see the 303 in Postman, turn off automatic redirect following in the request settings.\n\nThe link row is locked with NOWAIT, so a concurrent open, capture or refund of the same link gets 409 at once. The previous PENDING attempt is checked at the acquirer first. A link that is already paid, or held by an AUTHORIZED payment awaiting capture, gets 403; so do blocked, expired, canceled and completed links. Each successful press creates a PENDING transaction - run Get Payment Link Transactions afterwards to pick it up."
 					},
 					"response": []
 				},

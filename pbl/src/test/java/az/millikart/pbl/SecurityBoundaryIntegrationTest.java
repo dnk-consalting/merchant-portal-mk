@@ -116,19 +116,23 @@ class SecurityBoundaryIntegrationTest {
 
     // Намеренное ужесточение. Старая проверка звучала как «под /api/v1/payment-links/ и кончается
     // на /open» и совпадала на любой глубине; теперь шаблон требует ровно один сегмент, как и сам
-    // маппинг GetMapping("/{id}/open"). Лишний сегмент больше не способ дойти куда-то анонимно.
+    // маппинг /{id}/open. Лишний сегмент больше не способ дойти куда-то анонимно.
     @Test
     void openWithExtraPathSegment_withoutToken_returns401() throws Exception {
         mockMvc.perform(get("/api/v1/payment-links/a/b/open"))
                 .andExpect(status().isUnauthorized());
     }
 
-    // Обратная сторона: законная форма из одного сегмента анонимна даже для несуществующего id.
+    // Обратная сторона: законная форма из одного сегмента анонимна даже для несуществующего id — и кнопка
+    // оплаты (POST), и страница ссылки (GET, Р-143).
     @Test
     void openWithSingleSegment_withoutToken_isNotRejectedBySecurity() throws Exception {
-        mockMvc.perform(get("/api/v1/payment-links/{id}/open", UUID.randomUUID()))
+        mockMvc.perform(post("/api/v1/payment-links/{id}/open", UUID.randomUUID()))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.message", containsString("Payment link")));
+        mockMvc.perform(get("/api/v1/payment-links/{id}/open", UUID.randomUUID()))
+                .andExpect(status().isNotFound())
+                .andExpect(content().string(containsString("not available")));
     }
 
     // Один формат отказа, кто бы его ни выдал

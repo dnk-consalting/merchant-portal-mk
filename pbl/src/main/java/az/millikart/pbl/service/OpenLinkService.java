@@ -15,6 +15,9 @@ import az.millikart.txpg.AcquiringClient;
 import az.millikart.pbl.provider.ProviderOrderStatus.ProviderOrderOutcome;
 import az.millikart.pbl.provider.ProviderOrders;
 import az.millikart.txpg.dto.EcomCreateOrderResponse;
+import az.millikart.pbl.dto.PaymentPageView;
+import az.millikart.pbl.repository.CompanyRequisitesRepository;
+import az.millikart.pbl.repository.CompanyRequisitesRepository.CompanyRequisites;
 import az.millikart.pbl.repository.PaymentLinkRepository;
 import az.millikart.pbl.repository.TerminalRepository;
 import az.millikart.pbl.repository.TransactionRepository;
@@ -64,6 +67,7 @@ public class OpenLinkService {
     private final PaymentLinkService paymentLinkService;
     private final StatusChangeAudit statusChanges;
     private final ProviderCredentialsService providerCredentials;
+    private final CompanyRequisitesRepository companyRequisites;
     private final String baseUrl;
 
     public OpenLinkService(AcquiringClient acquiringClient,
@@ -73,6 +77,7 @@ public class OpenLinkService {
                            PaymentLinkService paymentLinkService,
                            StatusChangeAudit statusChanges,
                            ProviderCredentialsService providerCredentials,
+                           CompanyRequisitesRepository companyRequisites,
                            @Value("${pbl.base-url}") String baseUrl) {
         this.acquiringClient = acquiringClient;
         this.paymentLinkRepository = paymentLinkRepository;
@@ -81,7 +86,29 @@ public class OpenLinkService {
         this.paymentLinkService = paymentLinkService;
         this.statusChanges = statusChanges;
         this.providerCredentials = providerCredentials;
+        this.companyRequisites = companyRequisites;
         this.baseUrl = baseUrl;
+    }
+
+    // GET адреса ссылки делают и боты превью мессенджеров (Р-143): здесь только чтение — ни заказа, ни попытки,
+    // ни смены статуса. Доступность — подсказка плательщику, правило держит openAndBuildRedirect. Пусто — ссылки
+    // нет или платить по ней сейчас нельзя.
+    @Transactional(readOnly = true)
+    public Optional<PaymentPageView> paymentPage(UUID id) {
+        Optional<PaymentLink> found = paymentLinkRepository.findById(id);
+        if (found.isEmpty()) {
+            return Optional.empty();
+        }
+        PaymentLink link = found.get();
+        Optional<Terminal> terminal = terminalRepository.findById(link.getTerminalId());
+        boolean expired = link.getExpiresAt() != null && link.getExpiresAt().isBefore(Instant.now());
+        if (terminal.isEmpty() || terminal.get().isBlocked() || link.getStatus() != PaymentLinkStatus.ACTIVE || expired) {
+            return Optional.empty();
+        }
+        String merchantName = companyRequisites.findByCompanyId(terminal.get().getCompanyId())
+                .map(CompanyRequisites::name)
+                .orElse(null);
+        return Optional.of(new PaymentPageView(merchantName, link.getAmount(), link.getCurrency(), link.getDescription()));
     }
 
     // Одна транзакция от блокировки строки ссылки до записи попытки (P1-5): иначе два одновременных
